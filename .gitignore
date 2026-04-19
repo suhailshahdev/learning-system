@@ -1,0 +1,78 @@
+# ─────────────────────────────────────────
+# Secrets and local config
+# ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ─────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# ─────────────────────────────────────────
+# Node
+# ─────────────────────────────────────────
+node_modules/
+.pnpm-store/
+dist/
+build/
+*.local
+.vite/
+
+# ─────────────────────────────────────────
+# Databases and generated data
+# ─────────────────────────────────────────
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ─────────────────────────────────────────
+# Playwright + Chrome profiles (CRITICAL — contains session cookies)
+# ─────────────────────────────────────────
+chrome-profile/
+.playwright/
+playwright-report/
+test-results/
+
+# ─────────────────────────────────────────
+# Editors and OS
+# ─────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ─────────────────────────────────────────
+# Logs
+# ─────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
