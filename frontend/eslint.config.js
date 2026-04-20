@@ -20,4 +20,15 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  // Vendored shadcn/ui components follow shadcn's template conventions,
+  // not our project style. Mixed exports (component + variants) in the
+  // same file are intentional there; the react-refresh rule fights that
+  // and produces noise on every `shadcn add` without catching real bugs.
+  // Same idea as the backend's ruff ignore for alembic/versions/*.
+  {
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])
