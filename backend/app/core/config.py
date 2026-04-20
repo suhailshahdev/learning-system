@@ -36,6 +36,14 @@ class Settings(BaseSettings):
 
     database_url: str = Field(description="SQLAlchemy connection string for the primary database.")
 
+    cors_allow_origins: list[str] = Field(
+        default=["http://localhost:5173"],
+        description=(
+            "Origins permitted to call the API. The Vite dev server runs on " \
+            "5173; production deployments (if ever) should override this."
+        )
+    )
+
     @property
     def is_local(self) -> bool:
         """True when running in a local development context."""
