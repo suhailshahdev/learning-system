@@ -1,12 +1,15 @@
 # Pre-commit hooks enforce code quality at commit time so broken
 # code cannot enter history. Run `uvx pre-commit install` once
-# per clone to wire up the git hook. Hooks auto-run on `git commit`;
-# run manually across the whole repo with `uvx pre-commit` run
+# per clone to wire up the git hooks. Code-quality hooks auto-run
+# on `git commit`; the commit-msg hook validates the mesage itself.
+# Run all file-stage hooks manually with `uvx pre-commit run
 # --all-files`.
 #
 # Version drift note: the `rev:` fileds below pin hook tool
 # versions independently from pyproject.toml / package.json
 # When bumping ruff in pyproject.toml, bummp the rev here too.
+
+default_install_hook_types: [pre-commit, commit-msg]
 
 repos:
   # Baseline hygiene hooks. Catch trailing whitespace, missing
@@ -69,3 +72,14 @@ repos:
         language: system
         pass_filenames: false
         files: ^frontend/.*\.(ts|tsx)$
+
+  # Commitlint validates the commit message itself against the
+  # Conventional Commit spec. Runs at the `commit-msg` stage
+  # (after the file-level hooks above). This hook catches
+  # the bigger category: wrong type, malformed
+  # structure, missing scope delimiter.
+  - repo: https://github.com/opensource-nepal/commitlint
+    rev: v1.13.3
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
