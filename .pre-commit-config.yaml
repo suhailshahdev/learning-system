@@ -1,0 +1,51 @@
+# Pre-commit hooks enforce code quality at commit time so broken
+# code cannot enter history. Run `uvx pre-commit install` once
+# per clone to wire up the git hook. Hooks auto-run on `git commit`;
+# run manually across the whole repo with `uvx pre-commit- run
+# --all-files`.
+#
+# Version drift note: the `rev:` fileds below pin hook tool
+# versions independently from pyproject.toml / package.json
+# When bumping ruff in pyproject.toml, bummp the rev here too.
+
+repos:
+  # Baseline hygiene hooks. Catch trailing whitespace, missing
+  # final newlines, malformed YAML, accidentally-committed
+  # merge conflict markers, and files larger than 500kb.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  # Ruff linter and formatter for backend Python. Linter runs
+  # with --fix so auto-fixable issues are corrected in place.
+  # Formatter runs after the linter so any fixes are formatted.
+  # Scoped to backend/ to avoid running Python rules on e.g.
+  # alembic-generated migrations only in principle - ruff's
+  # per-file-ignores in pyproject.toml still apply.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+    - id: ruff-check
+      args: [--fix]
+      files: ^backend/
+    - id: ruff-format
+      files: ^backend/
+
+  # mypy runs as a local hook (not via mirrors-mypy) so it has
+  # access to the project's isntalled dependencies. Without
+  # that, mypy cannot follow imports into FastAPI, SQLAlchemy,
+  # Pydantic, etc.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (backend)
+        entry: uv run --directory backend mypy .
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
