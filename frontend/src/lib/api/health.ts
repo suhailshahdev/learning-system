@@ -1,6 +1,6 @@
 /**
  * Health check queries.
- * 
+ *
  * Thin wrapper around GET /api/health: schemas that mirror the
  * backend's HealthReponse, plus a pre-configured query for use with
  * TanStack Query. The backend returns 503 for the degraded case; that

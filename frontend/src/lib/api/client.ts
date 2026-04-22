@@ -1,6 +1,6 @@
 /**
  * Low-level API client and error types
- * 
+ *
  * `apiFetch` performs an HTTP request against the backend and returns
  * parsed JSON. Failures surface as typed `ApiError` instances so
  * callers can discriminate between network, HTTP and parse errors
@@ -13,7 +13,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * Kinds of failure `apiFetch` can produce.
- * 
+ *
  * - `network`: could not reach the backend (DNS, offline, refused)
  * - `http`: backend responded with a non-2xx status
  * - `parse`: response was received but did not match the schema.
@@ -43,7 +43,7 @@ type ApiFetchOptions<T> = {
 
 /**
  * Fetch a typed response from backend.
- * 
+ *
  * Always validates the response against the given Zod schema; skipping
  * this is not an option because untyped response defeat the purpose
  * of having type client. Callers that genuinely do not care about

@@ -25,7 +25,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Learning System API",
         version="0.1.0",
-        description="Local backend for the personal learning system."
+        description="Local backend for the personal learning system.",
     )
 
     app.add_middleware(
@@ -33,11 +33,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=resolved.cors_allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"]
+        allow_headers=["*"],
     )
 
     app.include_router(health.router, prefix="/api")
 
     return app
+
 
 app = create_app()

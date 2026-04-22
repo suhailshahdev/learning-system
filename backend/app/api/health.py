@@ -21,11 +21,13 @@ router = APIRouter(prefix="/health", tags=["health"])
 HealthStatus = Literal["ok", "degraded"]
 ComponentStatus = Literal["ok", "error"]
 
+
 class ComponentHealth(BaseModel):
     """Status of a single dependency"""
 
     status: ComponentStatus
     detail: str | None = None
+
 
 class HealthResponse(BaseModel):
     """Top-level health payload
@@ -37,6 +39,7 @@ class HealthResponse(BaseModel):
 
     status: HealthStatus
     components: dict[str, ComponentHealth]
+
 
 @router.get("", response_model=HealthResponse)
 def health(db: DbSession) -> JSONResponse:
