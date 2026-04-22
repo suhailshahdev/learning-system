@@ -1,7 +1,7 @@
 # Pre-commit hooks enforce code quality at commit time so broken
 # code cannot enter history. Run `uvx pre-commit install` once
 # per clone to wire up the git hook. Hooks auto-run on `git commit`;
-# run manually across the whole repo with `uvx pre-commit- run
+# run manually across the whole repo with `uvx pre-commit` run
 # --all-files`.
 #
 # Version drift note: the `rev:` fileds below pin hook tool
@@ -49,3 +49,23 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/.*\.py$
+
+      # eslint and tsc run locally because they need the
+      # packages installed in frontend/node_modules, which
+      # exist only after a `pnpm install` in that directory.
+      # Both tools check the whole frontend in one go; the
+      # `files:` filter only decides whether to trigger when
+      # staged changes touch frontend source.
+      - id: eslint
+        name: eslint (frontend)
+        entry: pnpm -C frontend lint
+        language: system
+        pass_filenames: false
+        files: ^frontend/.*\.(ts|tsx|js|jsx|mjs|cjs)$
+
+      - id: tsc
+        name: tsc (frontend)
+        entry: pnpm -C frontend typecheck
+        language: system
+        pass_filenames: false
+        files: ^frontend/.*\.(ts|tsx)$
