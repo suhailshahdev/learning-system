@@ -1,9 +1,11 @@
+import { ApiStatus } from "@/components/api-status";
 import { ModeToggle } from "@/components/mode-toggle";
 
 export function Home(): React.JSX.Element {
   return (
     <div className="min-h-svh bg-background text-foreground">
-      <header className="flex justify-end p-4">
+      <header className="flex items-center justify-end gap-4 p-4">
+        <ApiStatus />
         <ModeToggle />
       </header>
       <main className="flex flex-col items-center justify-center gap-4 p-8">

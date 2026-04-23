@@ -14,7 +14,7 @@ import { apiFetch } from "@/lib/api/client";
 
 const ComponentHealthSchema = z.object({
     status: z.enum(["ok", "error"]),
-    detail: z.string().nullable
+    detail: z.string().nullable()
 });
 
 export const HealthResponseSchema = z.object({
