@@ -1,7 +1,8 @@
 """Application configuration loaded from environment variables
 
-Settings are validated at startup. Missing required values raise on first access,
-which is what we want: fail loudly and early rather than silently using wrong values.
+Settings are checked at startup. Missing required values raise an
+error on first access. That's what we want: fail loud and early
+rather than run with the wrong values and find out later.
 """
 
 from functools import lru_cache
@@ -16,10 +17,11 @@ Environment = Literal["local", "test", "production"]
 class Settings(BaseSettings):
     """Typed configuration, loaded from the process environment or a local .env file.
 
-    Fields are documented inline. To add a new setting:
+    Each field has a description next to it. To add a new setting:
+
         1. Add the field here with a type and a default (or no default if required).
         2. Add the variable to .env.example with a comment.
-        3. Reference it through get_settings() in the code that needs it.
+        3. Read it through get_settings() in the code that needs it.
     """
 
     model_config = SettingsConfigDict(

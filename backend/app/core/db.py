@@ -1,11 +1,11 @@
 """Database engine and session factory.
 
-The engine is created once per process. Sessions are short-lived and
-created per unit of work; in the API layer each request gets its own
-session via FastAPI's dependency injection.
+The engine is built once per process. Sessions are short-lived and
+opened for a single piece of work. In the API layer, each request
+gets its own session through FastAPI's dependency injection.
 
-This module deliberately define only the primitives. Models live in
-app.models. Migration live in alembic/.
+This file only sets up the basics. Models live in in app.models.
+Migrations live in alembic/.
 """
 
 from collections.abc import Generator
@@ -36,8 +36,8 @@ def _build_engine() -> Engine:
     connect_args: dict[str, object] = {}
     if settings.database_url.startswith("sqlite"):
         # SQLite forbids sharing a connection across threads by default.
-        # FastAPI may use multiple threads, so relax this. Safe for our
-        # single-writer usage pattern.
+        # FastAPI may run things on different threads, so we turn the
+        # check off. Safe here because only one thing writes at a time.
         connect_args["check_same_thread"] = False
 
     return create_engine(settings.database_url, connect_args=connect_args, echo=False, future=True)

@@ -1,9 +1,9 @@
 """Health check endpoint.
 
-Reports liveness of the process and reachability of critical
-dependencies. The payload is structure so each component can be
-inspected independently; callers that only care about a binary
-up/down signal can look at the top-level status.
+Reports whether the process is alive and whether its key
+dependencies are reachable. The response body is structured so
+each component can be checked on its own. Callers that only care
+about a plain up/down signal can read the top-level status.
 """
 
 from typing import Literal
@@ -32,9 +32,10 @@ class ComponentHealth(BaseModel):
 class HealthResponse(BaseModel):
     """Top-level health payload
 
-    `status` is `ok` when  every component is `ok`, otherwise `degraded`.
-    Clients that want a binary signal should read `status`; clients that
-    want to surface a specific failure should read `components`.
+    `status` is `ok` when every component is `ok`, otherwise
+    `degraded`. Clients that want a simple up/down answer should
+    read `status`. Clients that want to show which thing broke
+    should read `components`.
     """
 
     status: HealthStatus
@@ -45,10 +46,11 @@ class HealthResponse(BaseModel):
 def health(db: DbSession) -> JSONResponse:
     """Return the service's health
 
-    Runs a trivial query against the database to confirm the engine
-    can acquire a connection. A failure here is the most common real
-    outage mode in local development (file missing, locked, schema,
-    drift), so this is the check worth having from day one.
+    Runs a tiny query against the database to confirm the engine
+    can open a connection. This is the check worth having from day
+    one, because a broken database connection is the most common
+    thing that goes wrong in local development (file missing,
+    file locked, schema drifted from models).
     """
     components: dict[str, ComponentHealth] = {}
 

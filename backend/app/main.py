@@ -1,9 +1,10 @@
-"""FastAPI application entry point
+"""FastAPI application entry point.
 
-Exposes both a factory (`create_app`) for tests and a module-level
-`app` instance for Uvicorn to import. The factory is the real
-constructor; the module-level binding exists only because ASGI servers
-need an import string.
+This module offers two ways to get the app: a factory function
+(`create_app`) used by tests, and a module-level `app` object
+that Uvicorn imports at startup. The factory is the real builder.
+The module-level `app` exists only because ASGI servers need an
+import path to point at.
 """
 
 from fastapi import FastAPI

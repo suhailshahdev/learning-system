@@ -21,11 +21,13 @@ class Base(DeclarativeBase):
 
 
 class UUIDPrimaryKey:
-    """Adds a UUI string primary key generated Python-side
+    """Adds a UUID string primary key generated in Python.
 
-    Stored as `String(36)` (canonical UUID form with hypes) for
-    cross-database compatibility; swappable to native `UUID` on
-    Postgres via migration without changing application code.
+    Stored as `String(36)`, which is the UUID written out with
+    hyphens (for example, `550e8400-e29b-41d4-a716-446655440000`).
+    This shape works on both SQLite and Postgres. When we move to
+    Postgres later, a migration can switch the column to the
+    native `UUID` type without changing any application code.
     """
 
     id: Mapped[str] = mapped_column(
@@ -38,8 +40,9 @@ class UUIDPrimaryKey:
 class Timestamps:
     """Adds `created_at` and `updated_at` as timezone-aware UTC.
 
-    `created_at` is set once at INSERT; `updated_at` is refreshed on
-    every UPDATE via SQLAlchemy's `onupdate` hook.
+    `created_at` is set once when the row is first saved.
+    `updated_at` is set again every time the row is changed,
+    through SQLAlchemy's `onupdate` hook.
     """
 
     created_at: Mapped[datetime] = mapped_column(
