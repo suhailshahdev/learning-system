@@ -27,3 +27,20 @@ class DomainKind(StrEnum):
     TOOL = "tool"
     PRACTICE = "practice"
     OTHER = "other"
+
+
+class Difficulty(StrEnum):
+    """Difficulty level for topics, learned items, and knowledge assertions."""
+
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+
+
+class AssertionSource(StrEnum):
+    """Where a knowledge assertion came from. Used by `user_knowledge_assertion.source`."""
+
+    SELF_DECLARED = "self_declared"
+    DERIVED_FROM_LEARNED_ITEMS = "derived_from_learned_items"
+    RESUME = "resume"
+    JD = "jd"
