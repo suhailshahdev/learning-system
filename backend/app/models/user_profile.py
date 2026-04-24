@@ -39,7 +39,7 @@ class UserProfile(Base, Timestamps):
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     default_stack: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resume_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    targe__jd_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target__jd_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     chrome_profile_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     prereq_warning_dismissed: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
 

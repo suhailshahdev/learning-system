@@ -1,15 +1,12 @@
 """Shared enums used across models.
 
-This file holds every enum that either maps to a database column
-or gets used by more than one model. Keeping them together means
-you can open one file to see every valid value for every enum
-column in the schema.
+Each enum maps to a database
+column or is used by more than one model, so they all live in
+one file for easy reference.
 
-All enums inherit from `StrEnum`, so each member is both an enum
-and a plain string. That matters because the database stores the
-string value (for example, `"language"`) and the JSON API sends
-the same string back to the frontend. No extra conversion step,
-no surprise object wrappers.
+All enums inherit from StrEnum, meaning each value is also a plain
+string. This keeps the database, API, and frontend in sync without
+any extra conversion.
 """
 
 from __future__ import annotations
@@ -58,3 +55,40 @@ class TopicStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     LEARNED = "learned"
     NEEDS_REVISION = "needs_revision"
+
+
+class SessionState(StrEnum):
+    """Lifecycle state of a session. Used by `session.state`."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+    ARCHIVED = "archived"
+
+
+class TurnRole(StrEnum):
+    """Who produced a turn. Used by `session_turn.role`."""
+
+    CLAUDE = "claude"
+    USER = "user"
+    SYSTEM = "system"
+
+
+class LearnedItemStatus(StrEnum):
+    """Status of a learned item. Used by `learned_item.status`."""
+
+    LEARNED = "learned"
+    NEEDS_REVISION = "needs_revision"
+
+
+class LearningMode(StrEnum):
+    """Learning mode for a question. Used by `session.mode_used`
+    and `session_turn.mode
+    """
+
+    FLASHCARD = "flashcard"
+    TYPE_THE_ANSWER = "type_the_answer"
+    CODE_WITH_EXPLANATION = "code_with_explanation"
+    MULTIPLE_CHOICE = "multiple_choice"
+    EXPLAIN_BACK = "explain_back"
+    SOCRATIC = "socratic"

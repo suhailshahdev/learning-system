@@ -8,7 +8,10 @@ introduces new topics during sessions. Domains live in the
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from datetime import (
+    datetime,  # noqa: TC003  (SQLAlchemy re-evaluates Mapped[datetime | None] at runtime)
+)
+from typing import Any
 
 from sqlalchemy import JSON, DateTime, ForeignKey, String
 from sqlalchemy import Enum as SQLEnum
@@ -16,9 +19,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPrimaryKey
 from app.models.enums import Difficulty, TopicStatus
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 
 class Topic(Base, UUIDPrimaryKey, Timestamps):

@@ -6,7 +6,19 @@ and `Timestamps` unless there is a specific reason not to.
 
 from app.models.base import Base, Timestamps, UUIDPrimaryKey
 from app.models.domain import Domain
-from app.models.enums import AssertionSource, Difficulty, DomainKind, TopicStatus
+from app.models.enums import (
+    AssertionSource,
+    Difficulty,
+    DomainKind,
+    LearnedItemStatus,
+    LearningMode,
+    SessionState,
+    TopicStatus,
+    TurnRole,
+)
+from app.models.learned_item import LearnedItem
+from app.models.session import Session
+from app.models.session_turn import SessionTurn
 from app.models.teaching_preference import TeachingPreference
 from app.models.topic import Topic
 from app.models.user_knowledge_assertion import UserKnowledgeAssertion
@@ -19,10 +31,17 @@ __all__ = [
     "Difficulty",
     "Domain",
     "DomainKind",
+    "LearnedItem",
+    "LearnedItemStatus",
+    "LearningMode",
+    "Session",
+    "SessionState",
+    "SessionTurn",
     "TeachingPreference",
     "Timestamps",
     "Topic",
     "TopicStatus",
+    "TurnRole",
     "UUIDPrimaryKey",
     "UserKnowledgeAssertion",
     "UserProfile",
