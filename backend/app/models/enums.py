@@ -44,3 +44,17 @@ class AssertionSource(StrEnum):
     DERIVED_FROM_LEARNED_ITEMS = "derived_from_learned_items"
     RESUME = "resume"
     JD = "jd"
+
+
+class TopicStatus(StrEnum):
+    """Session-level status of a topic. Used by `topic.status`
+
+    Tracks whether a topic has been covered in a session and whether
+    it's complete or needs another pass. Distinct from knowledge
+    assertions, which track what the user knows on a broader level.
+    """
+
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    LEARNED = "learned"
+    NEEDS_REVISION = "needs_revision"
