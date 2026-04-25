@@ -41,11 +41,16 @@ class Timestamps:
     """Adds `created_at` and `updated_at` as timezone-aware UTC.
 
     `created_at` is set once when the row is first saved.
-    `updated_at` is set again every time the row is changed,
+    `updated_at` is set on insert and refreshed on every update
     through SQLAlchemy's `onupdate` hook.
     """
 
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),

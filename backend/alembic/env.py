@@ -6,15 +6,17 @@ It connects Alembic to the application's SQLAlchemy engine and metadata.
 Why we override the default:
 - The database URL comes from app.core.config (which reads .env), not
   from alembic.ini. Single source of truth for configuration.
-- target_metadata points at app.core.db.Base.metadata so autogenerate
-  can diff against our declared models.
+- target_metadata points at app.models.Base.metadata so autogenerate
+  can diff against our declared models. Importing app.models pulls in
+  every model module, registering each table on the metadata before
+  autogenerate scans it.
 """
 
 from logging.config import fileConfig
 
 from alembic import context
 from app.core.config import get_settings
-from app.core.db import Base
+from app.models import Base
 from sqlalchemy import engine_from_config, pool
 
 config = context.config
