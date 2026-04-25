@@ -19,6 +19,24 @@ Features:
 - Optional resume and job description inputs pivot the curriculum toward interview prep
 - Runs locally, no cloud
 
+## Disclaimer
+
+This is a personal learning project, built in public for educational
+purposes. It includes browser automation against claude.ai, which is
+against Anthropic's Terms of Service. The author accepts this risk
+for personal, single-user use only.
+
+If you fork or use this code, you do so at your own risk. The author
+is not responsible for any consequences, including but not limited to
+account termination, legal action, or any other impact on your
+relationship with Anthropic or any other service this project
+interacts with.
+
+This project is not affiliated with, endorsed by, or otherwise
+associated with Anthropic.
+
+For any production or commercial use, use the official Anthropic API.
+
 ## License
 
 TBD.
