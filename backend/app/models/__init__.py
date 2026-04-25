@@ -16,6 +16,7 @@ from app.models.enums import (
     TopicStatus,
     TurnRole,
 )
+from app.models.error_log import ErrorLog
 from app.models.learned_item import LearnedItem
 from app.models.session import Session
 from app.models.session_turn import SessionTurn
@@ -31,6 +32,7 @@ __all__ = [
     "Difficulty",
     "Domain",
     "DomainKind",
+    "ErrorLog",
     "LearnedItem",
     "LearnedItemStatus",
     "LearningMode",
