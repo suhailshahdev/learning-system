@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "test", "production"]
@@ -55,6 +55,22 @@ class Settings(BaseSettings):
             "transport. Holds login cookies and session state for "
             "claude.ai. The directory contains active session credentials "
             "after login; do not commit, share, or sync it."
+        ),
+    )
+
+    deepseek_api_key: SecretStr = Field(
+        description=(
+            "API key for the DeepSeek chat completions endpoint. "
+            "SecretStr keeps it out of logs and reprs."
+        ),
+    )
+
+    deepseek_model: str = Field(
+        default="deepseek-v4-flash",
+        description=(
+            "DeepSeek model identifier. Default is the V4 efficiency tier. "
+            "Switch to deepseek-v4-pro for harder topics. Legacy aliases "
+            "deepseek-chat and deepseek-reasoner retire 2026-07-24."
         ),
     )
 
