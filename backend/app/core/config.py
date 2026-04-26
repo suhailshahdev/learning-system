@@ -6,6 +6,7 @@ rather than run with the wrong values and find out later.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -13,12 +14,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "test", "production"]
 
+DEFAULT_CHROME_PROFILE_PATH = Path.home() / ".config" / "learning-system" / "chrome-profile"
+
 
 class Settings(BaseSettings):
     """Typed configuration, loaded from the process environment or a local .env file.
 
     Each field has a description next to it. To add a new setting:
-
         1. Add the field here with a type and a default (or no default if required).
         2. Add the variable to .env.example with a comment.
         3. Read it through get_settings() in the code that needs it.
@@ -43,6 +45,16 @@ class Settings(BaseSettings):
         description=(
             "Origins permitted to call the API. The Vite dev server runs on "
             "5173; production deployments (if ever) should override this."
+        ),
+    )
+
+    chrome_profile_path: Path = Field(
+        default=DEFAULT_CHROME_PROFILE_PATH,
+        description=(
+            "Persistent Chrome profile directory used by the Playwright "
+            "transport. Holds login cookies and session state for "
+            "claude.ai. The directory contains active session credentials "
+            "after login; do not commit, share, or sync it."
         ),
     )
 

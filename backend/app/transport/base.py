@@ -26,6 +26,20 @@ class TransportResponse:
     text: str
 
 
+class TransportError(Exception):
+    """An LLM transport operation failed.
+
+    Carries a human-readable message and an optional underlying cause.
+    Service code catches this, logs to `error_log`, and surfaces a
+    clear message to the user without losing session progress.
+    """
+
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.cause = cause
+
+
 @runtime_checkable
 class LLMTransport(Protocol[Handle]):
     """Common interface for every LLM transport.
