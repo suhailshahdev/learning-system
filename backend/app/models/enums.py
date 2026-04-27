@@ -69,7 +69,7 @@ class SessionState(StrEnum):
 class TurnRole(StrEnum):
     """Who produced a turn. Used by `session_turn.role`."""
 
-    CLAUDE = "claude"
+    ASSISTANT = "assistant"
     USER = "user"
     SYSTEM = "system"
 
