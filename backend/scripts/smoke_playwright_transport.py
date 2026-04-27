@@ -20,7 +20,7 @@ from app.transport import TransportError
 from app.transport.playwright_impl import PlaywrightClaudeTransport
 
 PROFILE_PATH = Path.home() / ".config" / "learning-system" / "chrome-profile"
-TEST_PREAMBLE = "You are a test assistant. Reply briefly."
+TEST_INTRO = "You are a test assistant. Reply briefly."
 TEST_MESSAGE = "Reply with just the word 'acknowledged' and nothing else, please."
 
 
@@ -29,9 +29,9 @@ async def run_smoke() -> None:
     print("Starting transport...")
     async with PlaywrightClaudeTransport(PROFILE_PATH) as transport:
         print("Transport started. Opening new chat...")
-        chat = await transport.start_new_chat(TEST_PREAMBLE)
+        chat = await transport.start_new_chat(TEST_INTRO)
         print(f"Chat started. URL: {chat.chat_url}")
-        print(f"Message count after preamble: {chat.message_count}")
+        print(f"Message count after intro: {chat.message_count}")
 
         print("\nSending test message...")
         response = await transport.send(chat, TEST_MESSAGE)

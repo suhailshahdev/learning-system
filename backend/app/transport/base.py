@@ -49,8 +49,8 @@ class LLMTransport(Protocol[Handle]):
     through send and close.
     """
 
-    async def start_new_chat(self, system_preamble: str) -> Handle:
-        """Open a fresh chat seeded with the given system prompt."""
+    async def start_new_chat(self, system_intro: str) -> Handle:
+        """Open a fresh chat seeded with the given system intro."""
         ...
 
     async def send(self, chat: Handle, message: str) -> TransportResponse:

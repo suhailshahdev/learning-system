@@ -33,7 +33,7 @@ from app.transport.playwright_impl import PlaywrightClaudeTransport
 if TYPE_CHECKING:
     from app.transport.base import LLMTransport
 
-TEST_PREAMBLE = "You are a test assistant. Reply briefly and follow instructions exactly."
+TEST_INTRO = "You are a test assistant. Reply briefly and follow instructions exactly."
 
 ROUND_TRIP_PROMPT = "Reply with just the word 'acknowledged' and nothing else, please."
 
@@ -64,7 +64,7 @@ REQUIRED_DELIMITERS = (
 async def run_round_trip(name: str, transport: LLMTransport[Any]) -> None:
     """Test 1: trivial single round-trip."""
     print(f"  [{name}] round-trip: opening chat...")
-    chat = await transport.start_new_chat(TEST_PREAMBLE)
+    chat = await transport.start_new_chat(TEST_INTRO)
 
     print(f"  [{name}] round-trip: sending prompt...")
     response = await transport.send(chat, ROUND_TRIP_PROMPT)
@@ -85,7 +85,7 @@ async def run_delimited(name: str, transport: LLMTransport[Any]) -> None:
     plan; passes confirm a single prompt set is viable.
     """
     print(f"  [{name}] delimited: opening chat...")
-    chat = await transport.start_new_chat(TEST_PREAMBLE)
+    chat = await transport.start_new_chat(TEST_INTRO)
 
     print(f"  [{name}] delimited: sending delimited prompt...")
     response = await transport.send(chat, DELIMITED_PROMPT)

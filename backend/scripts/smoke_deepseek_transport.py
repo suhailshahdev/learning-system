@@ -19,7 +19,7 @@ from app.core.config import get_settings
 from app.transport import TransportError
 from app.transport.deepseek_impl import DeepseekTransport
 
-TEST_PREAMBLE = "You are a test assistant. Reply briefly."
+TEST_INTRO = "You are a test assistant. Reply briefly."
 TEST_MESSAGE = "Reply with just the word 'acknowledged' and nothing else, please."
 
 
@@ -33,9 +33,9 @@ async def run_smoke() -> None:
         default_model=settings.deepseek_model,
     ) as transport:
         print("Transport started. Opening new chat...")
-        chat = await transport.start_new_chat(TEST_PREAMBLE)
+        chat = await transport.start_new_chat(TEST_INTRO)
         print(f"Chat started. Model: {chat.model}")
-        print(f"Message count after preamble: {chat.message_count}")
+        print(f"Message count after intro: {chat.message_count}")
         print(f"History length: {len(chat.history)}")
 
         print("\nSending test message...")

@@ -109,7 +109,7 @@ class PlaywrightClaudeTransport:
             await self._playwright.stop()
             self._playwright = None
 
-    async def start_new_chat(self, system_preamble: str) -> PlaywrightChatHandle:
+    async def start_new_chat(self, system_intro: str) -> PlaywrightChatHandle:
         if self._context is None:
             raise TransportError("Transport not started. Call start() first.")
 
@@ -124,7 +124,7 @@ class PlaywrightClaudeTransport:
             ) from e
 
         handle = PlaywrightChatHandle(page=page)
-        await self._send_and_capture(handle, system_preamble)
+        await self._send_and_capture(handle, system_intro)
         return handle
 
     async def send(self, chat: PlaywrightChatHandle, message: str) -> TransportResponse:
