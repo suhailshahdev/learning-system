@@ -1,0 +1,300 @@
+"""Parser for delimited LLM responses.
+
+The transport layer hands back raw text. This module turns that
+text into one of the structured shapes from app/schemas/parsed_response.py.
+
+Three response kinds are recognized, dispatched on the first
+delimiter line in the text:
+
+  ---TOPIC---                  -> ParsedTurn
+  ---SESSION_END_PROPOSAL---   -> ParsedSessionEnd
+  ---HANDOVER---               -> ParsedHandover
+
+Anything else is a ParseError. The parser is strict by design:
+every required field must be present, every enum value must be
+valid, every prerequisite pair must be well-formed. Loud failures
+catch prompt-format drift early; lenient parsing would hide real
+bugs in saved session data.
+"""
+
+from __future__ import annotations
+
+import re
+
+from pydantic import ValidationError
+
+from app.models.enums import Difficulty, LearningMode
+from app.schemas.parsed_response import (
+    ParsedHandover,
+    ParsedResponse,
+    ParsedSessionEnd,
+    ParsedTurn,
+    Prerequisite,
+)
+
+# Matches a delimiter line and captures the name. Anchored to whole
+# line so a stray `---FOO---` inside content (e.g., a comment in a
+# code block) does not get mistaken for a delimiter.
+DELIMITER_RE = re.compile(r"^---([A-Z_]+)---$", re.MULTILINE)
+
+# Sentinels in the wire format that map to None / [] in the model.
+SENTINEL_OPEN = "OPEN"
+SENTINEL_NONE = "NONE"
+
+# Required fields per kind. Kept here so the dispatcher and the
+# field-extractor agree on what counts as a complete response.
+TURN_FIELDS = (
+    "TOPIC",
+    "DIFFICULTY",
+    "PREREQUISITES",
+    "MODE",
+    "QUESTION",
+    "EXPECTED_ANSWER",
+    "REQUIREMENTS",
+    "FOLLOWUP",
+    "TAGS",
+)
+
+HANDOVER_KEYS = (
+    "DOMAIN_FOCUS",
+    "COVERED",
+    "LAST_QUESTION",
+    "NEXT_PLANNED",
+    "OPEN_THREADS",
+    "USER_STATE",
+)
+
+# A single-block response (header + body) must be followed by an
+# end marker. This is the minimum block count for SESSION_END_PROPOSAL
+# and HANDOVER, both of which have one body block plus a closing marker.
+MIN_BLOCKS_WITH_END_MARKER = 2
+
+
+class ParseError(Exception):
+    """A response could not be parsed into a known shape.
+
+    Carries the raw response so the session engine can log it to
+    error_log for later inspection. The message describes what
+    went wrong; the cause is the underlying validation error if
+    one fired.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        raw_response: str,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.raw_response = raw_response
+        self.cause = cause
+
+
+def parse_response(text: str) -> ParsedResponse:
+    """Parse a transport response into a ParsedResponse.
+
+    Raises ParseError on any structural or semantic problem.
+    """
+    blocks = _split_blocks(text)
+    if not blocks:
+        raise ParseError("No delimiters found in response.", raw_response=text)
+
+    first_marker, _ = blocks[0]
+    if first_marker == "TOPIC":
+        return _parse_turn(blocks, raw=text)
+    if first_marker == "SESSION_END_PROPOSAL":
+        return _parse_session_end(blocks, raw=text)
+    if first_marker == "HANDOVER":
+        return _parse_handover(blocks, raw=text)
+
+    raise ParseError(f"Unknown leading delimiter: {first_marker!r}.", raw_response=text)
+
+
+def _split_blocks(text: str) -> list[tuple[str, str]]:
+    """Split text into (marker, content) pairs.
+
+    Walks the delimiter regex match-by-match. Content is everything
+    between this delimiter and the next one. A final END or
+    END_HANDOVER marker is included; its content (anything after it)
+    is discarded.
+    """
+    matches = list(DELIMITER_RE.finditer(text))
+    blocks: list[tuple[str, str]] = []
+    for i, match in enumerate(matches):
+        marker = match.group(1)
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[start:end].strip()
+        blocks.append((marker, content))
+    return blocks
+
+
+def _parse_turn(blocks: list[tuple[str, str]], raw: str) -> ParsedTurn:
+    """Build a ParsedTurn from a block list starting with TOPIC."""
+    fields = _collect_fields(blocks, expected=TURN_FIELDS, end_marker="END", raw=raw)
+
+    payload = {
+        "topic_path": fields["TOPIC"],
+        "difficulty": _parse_enum(fields["DIFFICULTY"], Difficulty, "DIFFICULTY", raw),
+        "prerequisites": _parse_prerequisites(fields["PREREQUISITES"], raw),
+        "mode": _parse_enum(fields["MODE"], LearningMode, "MODE", raw),
+        "question": fields["QUESTION"],
+        "expected_answer": _none_if_sentinel(fields["EXPECTED_ANSWER"], SENTINEL_OPEN),
+        "requirements": _none_if_sentinel(fields["REQUIREMENTS"], SENTINEL_NONE),
+        "followup": _none_if_sentinel(fields["FOLLOWUP"], SENTINEL_NONE),
+        "tags": _parse_tags(fields["TAGS"]),
+    }
+
+    try:
+        return ParsedTurn.model_validate(payload)
+    except ValidationError as e:
+        raise ParseError("Turn failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_session_end(blocks: list[tuple[str, str]], raw: str) -> ParsedSessionEnd:
+    """Build a ParsedSessionEnd from a block list starting with SESSION_END_PROPOSAL."""
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END":
+        raise ParseError("SESSION_END_PROPOSAL must be followed by END.", raw_response=raw)
+
+    summary = blocks[0][1]
+    try:
+        return ParsedSessionEnd.model_validate({"summary": summary})
+    except ValidationError as e:
+        raise ParseError("Session end failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_handover(blocks: list[tuple[str, str]], raw: str) -> ParsedHandover:
+    """Build a ParsedHandover from a block list starting with HANDOVER.
+
+    The handover format is one block of KEY: value lines, terminated
+    by ---END_HANDOVER---. Different from the other two kinds, which
+    use one delimiter per field.
+    """
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END_HANDOVER":
+        raise ParseError("HANDOVER must be followed by END_HANDOVER.", raw_response=raw)
+
+    body = blocks[0][1]
+    fields = _parse_handover_body(body, raw=raw)
+
+    try:
+        return ParsedHandover.model_validate(fields)
+    except ValidationError as e:
+        raise ParseError("Handover failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_handover_body(body: str, raw: str) -> dict[str, str]:
+    """Parse the KEY: value lines inside a handover block."""
+    fields: dict[str, str] = {}
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise ParseError(f"Malformed handover line (no colon): {line!r}", raw_response=raw)
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key not in HANDOVER_KEYS:
+            raise ParseError(f"Unknown handover key: {key!r}", raw_response=raw)
+        fields[_handover_field_name(key)] = value
+
+    missing = [k for k in HANDOVER_KEYS if _handover_field_name(k) not in fields]
+    if missing:
+        raise ParseError(f"Handover missing fields: {missing}", raw_response=raw)
+    return fields
+
+
+def _handover_field_name(key: str) -> str:
+    """Convert wire-format KEY (uppercase) to model field name (lowercase)."""
+    return key.lower()
+
+
+def _collect_fields(
+    blocks: list[tuple[str, str]],
+    expected: tuple[str, ...],
+    end_marker: str,
+    raw: str,
+) -> dict[str, str]:
+    """Build a {marker: content} dict, enforcing the expected sequence."""
+    if not blocks or blocks[-1][0] != end_marker:
+        raise ParseError(f"Response must terminate with ---{end_marker}---.", raw_response=raw)
+
+    field_blocks = blocks[:-1]
+    if len(field_blocks) != len(expected):
+        raise ParseError(
+            f"Expected {len(expected)} fields, got {len(field_blocks)}: "
+            f"{[m for m, _ in field_blocks]}",
+            raw_response=raw,
+        )
+
+    out: dict[str, str] = {}
+    for i, (marker, content) in enumerate(field_blocks):
+        if marker != expected[i]:
+            raise ParseError(
+                f"Field {i} expected {expected[i]!r}, got {marker!r}.",
+                raw_response=raw,
+            )
+        out[marker] = content
+    return out
+
+
+def _parse_enum[E: (Difficulty, LearningMode)](
+    value: str, enum_cls: type[E], field_name: str, raw: str
+) -> E:
+    """Coerce a string to an enum member, raising ParseError on miss."""
+    try:
+        return enum_cls(value.strip().lower())
+    except ValueError as e:
+        valid = [m.value for m in enum_cls]
+        raise ParseError(
+            f"Invalid {field_name}: {value!r}. Valid values: {valid}.",
+            raw_response=raw,
+            cause=e,
+        ) from e
+
+
+def _parse_prerequisites(value: str, raw: str) -> list[Prerequisite]:
+    """Parse the PREREQUISITES content into a list of Prerequisite models."""
+    stripped = value.strip()
+    if stripped == SENTINEL_NONE or not stripped:
+        return []
+
+    out: list[Prerequisite] = []
+    for raw_pair in stripped.split(","):
+        pair = raw_pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ParseError(f"Malformed prerequisite (no colon): {pair!r}", raw_response=raw)
+        # rpartition so a topic path containing colons still parses;
+        # difficulty (rightmost token) is unambiguous.
+        path, _, diff = pair.rpartition(":")
+        path = path.strip()
+        diff = diff.strip().lower()
+        if not path:
+            raise ParseError(f"Prerequisite missing topic_path: {pair!r}", raw_response=raw)
+        try:
+            min_diff = Difficulty(diff)
+        except ValueError as e:
+            raise ParseError(
+                f"Invalid prerequisite difficulty: {diff!r} in {pair!r}.",
+                raw_response=raw,
+                cause=e,
+            ) from e
+        out.append(Prerequisite(topic_path=path, min_difficulty=min_diff))
+    return out
+
+
+def _parse_tags(value: str) -> list[str]:
+    """Split TAGS content on commas, strip each, drop empties."""
+    stripped = value.strip()
+    if not stripped or stripped == SENTINEL_NONE:
+        return []
+    return [t.strip() for t in stripped.split(",") if t.strip()]
+
+
+def _none_if_sentinel(value: str, sentinel: str) -> str | None:
+    """Return None if the field's content is the literal sentinel, else the stripped value."""
+    stripped = value.strip()
+    return None if stripped == sentinel else stripped
