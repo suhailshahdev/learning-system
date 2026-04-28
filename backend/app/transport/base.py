@@ -9,10 +9,13 @@ holds the handle without knowing what is inside it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol, TypeVar, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Literal, Protocol, TypeVar, runtime_checkable
 
 Handle = TypeVar("Handle")
+
+
+PriorRole = Literal["system", "user", "assistant"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,36 @@ class TransportResponse:
     """
 
     text: str
+
+
+@dataclass(frozen=True)
+class PriorMessage:
+    """One message from a previous turn, used when resuming a chat.
+
+    Transports that rebuild conversation state from scratch (DeepSeek,
+    where each request carries the full history) consume this. Transports
+    that point at server-side state (Playwright, where claude.ai holds
+    the chat) ignore it and use chat_url instead.
+    """
+
+    role: PriorRole
+    content: str
+
+
+@dataclass(frozen=True)
+class ChatResumeMetadata:
+    """Everything a transport needs to reattach to an in-progress chat.
+
+    chat_url is set by transports that have a server-side chat to
+    navigate to. prior_messages is set for transports that rebuild
+    history from persisted turns. Different transports use different
+    fields; building one struct with both keeps the service layer
+    transport-agnostic.
+    """
+
+    chat_url: str | None = None
+    prior_messages: list[PriorMessage] = field(default_factory=list)
+    message_count: int = 0
 
 
 class TransportError(Exception):
@@ -45,12 +78,16 @@ class LLMTransport(Protocol[Handle]):
     """Common interface for every LLM transport.
 
     A transport manages one or more chats with an LLM. Each chat is
-    represented by a handle returned from start_new_chat and passed
-    through send and close.
+    represented by a handle returned from start_new_chat or resume_chat
+    and passed through send and close.
     """
 
     async def start_new_chat(self, system_intro: str) -> Handle:
         """Open a fresh chat seeded with the given system intro."""
+        ...
+
+    async def resume_chat(self, metadata: ChatResumeMetadata) -> Handle:
+        """Reattach to an in-progress chat from persisted metadata."""
         ...
 
     async def send(self, chat: Handle, message: str) -> TransportResponse:

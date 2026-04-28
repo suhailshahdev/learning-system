@@ -33,7 +33,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.services.session_service import SessionServiceError, start_session
+from app.services.session_service import (
+    SessionServiceError,
+    send_user_answer,
+    start_session,
+)
 from app.transport import TransportError
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
@@ -48,7 +52,7 @@ TransportChoice = Literal["deepseek", "playwright", "all"]
 
 
 async def smoke_one(name: str, transport: LLMTransport[Any]) -> None:
-    """Run start_session once against the given transport."""
+    """Run start_session and one follow-up against the given transport."""
     print(f"=== {name} ===")
     print(f"  topic_path: {SMOKE_TOPIC_PATH}")
 
@@ -59,14 +63,32 @@ async def smoke_one(name: str, transport: LLMTransport[Any]) -> None:
             topic_path=SMOKE_TOPIC_PATH,
         )
 
-        print(f"  session.id={session.id}")
-        print(f"  session.state={session.state.value}")
-        print(f"  session.mode_used={session.mode_used.value}")
-        print(f"  session.message_count={session.claude_chat_message_count}")
-        print(f"  topic.id={session.topic_id}")
-        print(f"  parsed.mode={parsed.mode.value}")
-        print(f"  parsed.difficulty={parsed.difficulty.value}")
-        print(f"  parsed.question={parsed.question[:100]!r}")
+        print(f"  [start] session.id={session.id}")
+        print(f"  [start] session.state={session.state.value}")
+        print(f"  [start] session.mode_used={session.mode_used.value}")
+        print(f"  [start] session.message_count={session.claude_chat_message_count}")
+        print(f"  [start] topic.id={session.topic_id}")
+        print(f"  [start] parsed.mode={parsed.mode.value}")
+        print(f"  [start] parsed.difficulty={parsed.difficulty.value}")
+        print(f"  [start] parsed.question={parsed.question[:100]!r}")
+
+        followup_answer = (
+            parsed.expected_answer if parsed.expected_answer is not None else "I do not know."
+        )
+        print(f"  [send] answer={followup_answer[:60]!r}")
+
+        next_parsed = await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer=followup_answer,
+        )
+
+        print(f"  [send] parsed.kind={next_parsed.kind}")
+        if hasattr(next_parsed, "question"):
+            print(f"  [send] parsed.question={next_parsed.question[:100]!r}")
+        db.refresh(session)
+        print(f"  [send] session.message_count={session.claude_chat_message_count}")
         print(f"  [{name}] passed.\n")
 
 

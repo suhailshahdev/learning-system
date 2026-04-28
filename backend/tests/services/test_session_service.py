@@ -20,9 +20,11 @@ from app.models import (
     TopicStatus,
     TurnRole,
 )
+from app.schemas.parsed_response import ParsedTurn
 from app.services.parser import ParseError
 from app.services.session_service import (
     SessionServiceError,
+    send_user_answer,
     start_session,
 )
 from app.transport.base import TransportError
@@ -185,3 +187,149 @@ async def test_start_session_raises_on_wrong_response_kind(db: DbSession) -> Non
 
     assert db.query(Session).count() == 0
     assert db.query(SessionTurn).count() == 0
+
+
+SECOND_TURN_RESPONSE = """\
+---TOPIC---
+Python > Data Types > Integers
+---DIFFICULTY---
+beginner
+---PREREQUISITES---
+NONE
+---MODE---
+type_the_answer
+---QUESTION---
+What is 10 % 3 in Python?
+---EXPECTED_ANSWER---
+1
+---REQUIREMENTS---
+NONE
+---FOLLOWUP---
+NONE
+---TAGS---
+arithmetic, modulo
+---END---
+"""
+
+
+async def test_send_user_answer_persists_user_and_assistant_turns(db: DbSession) -> None:
+    """Happy path: persists user and assistant turns at indexes 2 and 3."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    parsed = await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    assert isinstance(parsed, ParsedTurn)
+    assert parsed.mode == LearningMode.TYPE_THE_ANSWER
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    assert len(turns) == 4
+    assert turns[2].role == TurnRole.USER
+    assert turns[2].turn_index == 2
+    assert turns[2].raw_content == "3"
+    assert turns[2].mode is None
+    assert turns[3].role == TurnRole.ASSISTANT
+    assert turns[3].turn_index == 3
+    assert turns[3].mode == LearningMode.TYPE_THE_ANSWER
+
+    db.refresh(session)
+    assert session.mode_used == LearningMode.TYPE_THE_ANSWER
+    assert session.claude_chat_message_count == 2
+
+
+async def test_send_user_answer_rebuilds_chat_metadata(db: DbSession) -> None:
+    """The transport receives metadata built from the persisted turns."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    # Two chats produced: one from start_new_chat, one from resume_chat.
+    assert len(transport.chats) == 2
+    resumed = transport.chats[1]
+    assert resumed.resumed_from is not None
+    metadata = resumed.resumed_from
+    # Resumed metadata should reflect both persisted turns from start.
+    assert len(metadata.prior_messages) == 2
+    assert metadata.prior_messages[0].role == "system"
+    assert metadata.prior_messages[1].role == "assistant"
+    assert metadata.message_count == 1
+
+
+async def test_send_user_answer_rejects_non_in_progress_session(db: DbSession) -> None:
+    """A completed session cannot accept new turns."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    session.state = SessionState.COMPLETED
+    db.commit()
+
+    with pytest.raises(SessionServiceError, match="expected in_progress"):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer="3",
+        )
+
+
+async def test_send_user_answer_rejects_unknown_session(db: DbSession) -> None:
+    """An unknown session id raises a clear error."""
+    transport = FakeTransport(responses=[])
+
+    with pytest.raises(SessionServiceError, match="not found"):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id="00000000-0000-0000-0000-000000000000",
+            answer="3",
+        )
+
+
+async def test_send_user_answer_rolls_back_on_parse_failure(db: DbSession) -> None:
+    """Garbage from the LLM rolls back the user turn too."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, "not a delimited response"])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    turns_before = db.query(SessionTurn).count()
+
+    with pytest.raises(SessionServiceError):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer="3",
+        )
+
+    # Neither user turn nor assistant turn was written.
+    turns_after = db.query(SessionTurn).count()
+    assert turns_after == turns_before

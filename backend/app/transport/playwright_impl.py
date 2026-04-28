@@ -20,7 +20,7 @@ from patchright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
 
-from app.transport.base import TransportError, TransportResponse
+from app.transport.base import ChatResumeMetadata, TransportError, TransportResponse
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -126,6 +126,39 @@ class PlaywrightClaudeTransport:
         handle = PlaywrightChatHandle(page=page)
         await self._send_and_capture(handle, system_intro)
         return handle
+
+    async def resume_chat(self, metadata: ChatResumeMetadata) -> PlaywrightChatHandle:
+        if self._context is None:
+            raise TransportError("Transport not started. Call start() first.")
+
+        if metadata.chat_url is None:
+            raise TransportError("Cannot resume Playwright chat without chat_url.")
+
+        page = await self._context.new_page()
+        try:
+            await page.goto(metadata.chat_url, timeout=PAGE_LOAD_TIMEOUT_MS)
+            await page.wait_for_selector(INPUT_SELECTOR, timeout=INPUT_READY_TIMEOUT_MS)
+            # Verify the chat history loaded; a 404 or auth redirect would
+            # leave us with the input box but zero assistant messages, and
+            # the next send would silently start a new chat.
+            existing = await page.locator(ASSISTANT_MESSAGE_SELECTOR).count()
+            if existing == 0:
+                await page.close()
+                raise TransportError(
+                    f"Chat URL {metadata.chat_url} loaded but has no assistant messages. "
+                    "The chat may have been deleted on claude.ai."
+                )
+        except PlaywrightTimeout as e:
+            await page.close()
+            raise TransportError(
+                f"Could not reach {metadata.chat_url} or input never appeared.", cause=e
+            ) from e
+
+        return PlaywrightChatHandle(
+            page=page,
+            chat_url=metadata.chat_url,
+            message_count=metadata.message_count,
+        )
 
     async def send(self, chat: PlaywrightChatHandle, message: str) -> TransportResponse:
         if chat.page.is_closed():

@@ -6,10 +6,10 @@ turns. The service is the only layer that knows about both the
 transport and the database; transports do not write to the DB and
 DB models do not call transports.
 
-This file currently covers session start (one round-trip from
-intro through first parsed turn). Multi-turn flow, pause/resume,
-auto-new-chat with handover, and end states are deferred to a
-future step.
+Covers session start (one round-trip from intro through first
+parsed turn) and follow-up turns within the same chat. Auto-new-
+chat with handover, end-state transitions, and approval flow are
+deferred to later steps.
 """
 
 from __future__ import annotations
@@ -26,9 +26,14 @@ from app.models import (
 )
 from app.prompts.first_prompt import build_first_prompt
 from app.prompts.intro import build_intro
-from app.schemas.parsed_response import ParsedTurn
+from app.prompts.turn_prompt import build_turn_prompt
+from app.schemas.parsed_response import ParsedResponse, ParsedTurn
 from app.services.parser import parse_response
-from app.transport.base import TransportError
+from app.transport.base import (
+    ChatResumeMetadata,
+    PriorMessage,
+    TransportError,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -102,6 +107,114 @@ async def start_session(
     db.commit()
     db.refresh(session)
     return session, parsed
+
+
+async def send_user_answer(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    session_id: str,
+    answer: str,
+) -> ParsedResponse:
+    """Send the user's answer in an in-progress session and parse the reply.
+
+    Resumes the LLM chat from persisted session state, sends the
+    user's answer, parses the response, and persists both turns in
+    one transaction. Returns the parsed response so the caller can
+    branch on its kind: a ParsedTurn means continue the session, a
+    ParsedSessionEnd means the LLM proposes wrapping up, and a
+    ParsedHandover means the chat is near its message count threshold.
+
+    The session must be in IN_PROGRESS state. Both turns are
+    written or neither is.
+    """
+    session = db.get(Session, session_id)
+    if session is None:
+        raise SessionServiceError(f"Session {session_id!r} not found.")
+    if session.state is not SessionState.IN_PROGRESS:
+        raise SessionServiceError(
+            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
+        )
+
+    metadata = _rebuild_chat_metadata(session)
+    next_index = _next_turn_index(db, session_id)
+    prompt = build_turn_prompt(answer)
+
+    try:
+        chat = await transport.resume_chat(metadata)
+        response = await transport.send(chat, prompt)
+    except TransportError as e:
+        db.rollback()
+        raise SessionServiceError(
+            f"Transport failed during send_user_answer: {e.message}", cause=e
+        ) from e
+
+    try:
+        parsed = parse_response(response.text)
+    except Exception as e:
+        db.rollback()
+        raise SessionServiceError("Parse failed on user-answer response.", cause=e) from e
+
+    user_turn = SessionTurn(
+        session_id=session.id,
+        turn_index=next_index,
+        role=TurnRole.USER,
+        raw_content=answer,
+        parsed=None,
+        mode=None,
+    )
+    assistant_turn = SessionTurn(
+        session_id=session.id,
+        turn_index=next_index + 1,
+        role=TurnRole.ASSISTANT,
+        raw_content=response.text,
+        parsed=parsed.model_dump(mode="json"),
+        mode=parsed.mode if isinstance(parsed, ParsedTurn) else None,
+    )
+    db.add(user_turn)
+    db.add(assistant_turn)
+
+    session.claude_chat_message_count = getattr(chat, "message_count", 0)
+    if isinstance(parsed, ParsedTurn):
+        session.mode_used = parsed.mode
+
+    db.commit()
+    db.refresh(session)
+    return parsed
+
+
+def _next_turn_index(db: DbSession, session_id: str) -> int:
+    """Return the next turn_index for the given session."""
+    last = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session_id)
+        .order_by(SessionTurn.turn_index.desc())
+        .first()
+    )
+    return 0 if last is None else last.turn_index + 1
+
+
+def _rebuild_chat_metadata(session: Session) -> ChatResumeMetadata:
+    """Build ChatResumeMetadata from a persisted session and its turns.
+
+    chat_url comes straight from the session row. prior_messages is
+    rebuilt from session_turn rows in turn order, and transports that
+    only need chat_url (Playwright) ignore it. Each turn's role is
+    mapped to the transport-side PriorRole literal.
+    """
+    prior_messages: list[PriorMessage] = []
+    for turn in session.turns:
+        prior_messages.append(
+            PriorMessage(
+                role=turn.role.value,
+                content=turn.raw_content,
+            )
+        )
+    return ChatResumeMetadata(
+        chat_url=session.claude_chat_url,
+        prior_messages=prior_messages,
+        message_count=session.claude_chat_message_count,
+    )
 
 
 def _get_or_create_topic(db: DbSession, path: str) -> Topic:

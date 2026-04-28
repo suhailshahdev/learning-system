@@ -7,10 +7,20 @@ browser automation transport, `deepseek_impl.py` for the DeepSeek
 chat completions API transport.
 """
 
-from app.transport.base import LLMTransport, TransportError, TransportResponse
+from app.transport.base import (
+    ChatResumeMetadata,
+    LLMTransport,
+    PriorMessage,
+    PriorRole,
+    TransportError,
+    TransportResponse,
+)
 
 __all__ = [
+    "ChatResumeMetadata",
     "LLMTransport",
+    "PriorMessage",
+    "PriorRole",
     "TransportError",
     "TransportResponse",
 ]

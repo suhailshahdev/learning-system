@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
 
-from app.transport.base import TransportError, TransportResponse
+from app.transport.base import ChatResumeMetadata, TransportError, TransportResponse
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -127,6 +127,18 @@ class DeepseekTransport:
         # in both. Without this, the DeepSeek handle would have one fewer
         # round-trip than the Playwright one at the same point in the flow.
         await self._send_and_capture(handle, "Acknowledge the instructions above with one word.")
+        return handle
+
+    async def resume_chat(self, metadata: ChatResumeMetadata) -> DeepseekChatHandle:
+        if self._client is None:
+            raise TransportError("Transport not started. Call start() first.")
+
+        if not metadata.prior_messages:
+            raise TransportError("Cannot resume DeepSeek chat with empty prior_messages.")
+
+        handle = DeepseekChatHandle(model=self._default_model)
+        handle.history = [Message(role=m.role, content=m.content) for m in metadata.prior_messages]
+        handle.message_count = metadata.message_count
         return handle
 
     async def send(self, chat: DeepseekChatHandle, message: str) -> TransportResponse:
