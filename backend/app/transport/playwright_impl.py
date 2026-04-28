@@ -208,7 +208,7 @@ class PlaywrightClaudeTransport:
                 timeout=RESPONSE_DONE_TIMEOUT_MS,
             )
 
-            text = await new_message.inner_text()
+            text = await new_message.text_content() or ""
         except PlaywrightTimeout as e:
             raise TransportError("Timed out waiting for claude.ai response.", cause=e) from e
         except Exception as e:
