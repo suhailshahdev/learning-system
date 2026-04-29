@@ -1,22 +1,25 @@
 """Session service.
 
 Orchestrates the lifecycle of a learning session: opening a chat
-on a transport, sending prompts, parsing responses, and persisting
-turns. The service is the only layer that knows about both the
-transport and the database; transports do not write to the DB and
-DB models do not call transports.
+on a transport, sending prompts, parsing responses, persisting
+turns, and minting learned items on approval. The service is the
+only layer that knows about both the transport and the database;
+transports do not write to the DB and DB models do not call
+transports.
 
-Covers session start (one round-trip from intro through first
-parsed turn) and follow-up turns within the same chat. Auto-new-
-chat with handover, end-state transitions, and approval flow are
-deferred to later steps.
+Covers session start, follow-up turns within the same chat, and
+session approval. Auto-new-chat with handover and the abandoned-
+state path are deferred to later steps.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from app.models import (
+    LearnedItem,
+    LearnedItemStatus,
     Session,
     SessionState,
     SessionTurn,
@@ -277,4 +280,92 @@ def _build_assistant_turn(
         raw_content=response_text,
         parsed=parsed.model_dump(mode="json"),
         mode=parsed.mode,
+    )
+
+
+# Placeholder stored in learned_item.answer when the LLM graded the
+# turn conversationally (EXPECTED_ANSWER was OPEN). The column is
+# non-nullable; this preserves the item with a clear marker rather
+# than dropping it or storing an empty string.
+OPEN_ANSWER_PLACEHOLDER = "[graded conversationally]"
+
+
+async def approve_session(*, db: DbSession, session_id: str) -> Session:
+    """Approve an in-progress session and mint learned items.
+
+    Walks the session's turns in order, pairs each parseable
+    teaching turn with the user's next answer, and writes one
+    LearnedItem per pair. Marks the session COMPLETED. All writes
+    commit together or roll back together.
+
+    Returns the refreshed Session.
+    """
+    session = db.get(Session, session_id)
+    if session is None:
+        raise SessionServiceError(f"Session {session_id!r} not found.")
+    if session.state is not SessionState.IN_PROGRESS:
+        raise SessionServiceError(
+            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
+        )
+
+    now = datetime.now(UTC)
+    items = _build_learned_items(db, session, now)
+
+    for item in items:
+        db.add(item)
+    session.state = SessionState.COMPLETED
+
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def _build_learned_items(db: DbSession, session: Session, now: datetime) -> list[LearnedItem]:
+    """Build one LearnedItem per teaching turn that has a user answer.
+
+    Pairs each ASSISTANT turn whose parsed payload is a teaching
+    turn with the immediately following USER turn. Teaching turns
+    without a user answer (e.g. an unanswered final question
+    before SESSION_END_PROPOSAL) are skipped.
+    """
+    turns = sorted(session.turns, key=lambda t: t.turn_index)
+    items: list[LearnedItem] = []
+
+    for i, turn in enumerate(turns):
+        if turn.role is not TurnRole.ASSISTANT or turn.parsed is None:
+            continue
+        if turn.parsed.get("kind") != "turn":
+            continue
+
+        next_turn = turns[i + 1] if i + 1 < len(turns) else None
+        if next_turn is None or next_turn.role is not TurnRole.USER:
+            continue
+
+        items.append(_build_learned_item(db, turn, next_turn, now))
+
+    return items
+
+
+def _build_learned_item(
+    db: DbSession,
+    assistant_turn: SessionTurn,
+    user_turn: SessionTurn,
+    now: datetime,
+) -> LearnedItem:
+    """Build one LearnedItem from a (ParsedTurn, user-answer) pair."""
+    parsed = ParsedTurn.model_validate(assistant_turn.parsed)
+    topic = _get_or_create_topic(db, parsed.topic_path)
+
+    answer = parsed.expected_answer or OPEN_ANSWER_PLACEHOLDER
+
+    return LearnedItem(
+        session_id=assistant_turn.session_id,
+        topic_id=topic.id,
+        question=parsed.question,
+        answer=answer,
+        your_answer=user_turn.raw_content,
+        mode=parsed.mode,
+        difficulty=parsed.difficulty,
+        status=LearnedItemStatus.LEARNED,
+        last_reviewed_at=now,
     )

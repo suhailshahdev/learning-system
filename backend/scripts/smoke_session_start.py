@@ -33,8 +33,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.models import LearnedItem
 from app.services.session_service import (
     SessionServiceError,
+    approve_session,
     send_user_answer,
     start_session,
 )
@@ -89,6 +91,19 @@ async def smoke_one(name: str, transport: LLMTransport[Any]) -> None:
             print(f"  [send] parsed.question={next_parsed.question[:100]!r}")
         db.refresh(session)
         print(f"  [send] session.message_count={session.claude_chat_message_count}")
+
+        completed = await approve_session(db=db, session_id=session.id)
+        items = (
+            db.query(LearnedItem)
+            .filter(LearnedItem.session_id == completed.id)
+            .order_by(LearnedItem.created_at)
+            .all()
+        )
+        print(f"  [approve] session.state={completed.state.value}")
+        print(f"  [approve] learned_items={len(items)}")
+        for item in items:
+            your_answer = item.your_answer or ""
+            print(f"  [approve]   - {item.question[:60]!r} -> {your_answer[:40]!r}")
         print(f"  [{name}] passed.\n")
 
 

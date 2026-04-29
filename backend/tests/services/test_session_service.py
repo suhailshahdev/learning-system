@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from app.models import (
+    LearnedItem,
+    LearnedItemStatus,
     LearningMode,
     Session,
     SessionState,
@@ -23,7 +25,9 @@ from app.models import (
 from app.schemas.parsed_response import ParsedTurn
 from app.services.parser import ParseError
 from app.services.session_service import (
+    OPEN_ANSWER_PLACEHOLDER,
     SessionServiceError,
+    approve_session,
     send_user_answer,
     start_session,
 )
@@ -333,3 +337,172 @@ async def test_send_user_answer_rolls_back_on_parse_failure(db: DbSession) -> No
     # Neither user turn nor assistant turn was written.
     turns_after = db.query(SessionTurn).count()
     assert turns_after == turns_before
+
+
+OPEN_ANSWER_TURN_RESPONSE = """\
+---TOPIC---
+Python > Data Types > Integers
+---DIFFICULTY---
+intermediate
+---PREREQUISITES---
+NONE
+---MODE---
+explain_back
+---QUESTION---
+Explain in your own words how Python integers handle arbitrary precision.
+---EXPECTED_ANSWER---
+OPEN
+---REQUIREMENTS---
+NONE
+---FOLLOWUP---
+NONE
+---TAGS---
+integers
+---END---
+"""
+
+
+async def test_approve_session_mints_learned_items_and_completes(db: DbSession) -> None:
+    """Happy path: each Q/A pair becomes a learned_item; session goes COMPLETED."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    refreshed = await approve_session(db=db, session_id=session.id)
+
+    assert refreshed.state == SessionState.COMPLETED
+
+    items = (
+        db.query(LearnedItem)
+        .filter(LearnedItem.session_id == session.id)
+        .order_by(LearnedItem.created_at)
+        .all()
+    )
+    assert len(items) == 1
+    item = items[0]
+    assert item.question == "What is the result of 7 // 2 in Python 3?"
+    assert item.answer == "3"
+    assert item.your_answer == "3"
+    assert item.mode == LearningMode.FLASHCARD
+    assert item.status == LearnedItemStatus.LEARNED
+    assert item.last_reviewed_at is not None
+
+
+async def test_approve_session_skips_unanswered_teaching_turn(db: DbSession) -> None:
+    """A teaching turn with no following user answer is not minted."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    # No send_user_answer call — the first teaching turn has no user answer.
+    refreshed = await approve_session(db=db, session_id=session.id)
+
+    assert refreshed.state == SessionState.COMPLETED
+    assert db.query(LearnedItem).count() == 0
+
+
+async def test_approve_session_uses_placeholder_for_open_answer(db: DbSession) -> None:
+    """OPEN expected_answer becomes the placeholder string."""
+    transport = FakeTransport(responses=[OPEN_ANSWER_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="They grow as needed without overflow.",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).order_by(LearnedItem.created_at).all()
+    assert len(items) == 1
+    assert items[0].answer == OPEN_ANSWER_PLACEHOLDER
+    assert items[0].your_answer == "They grow as needed without overflow."
+
+
+async def test_approve_session_skips_session_end_turn(db: DbSession) -> None:
+    """A SESSION_END_PROPOSAL turn is not minted as a learned item."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SESSION_END_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).all()
+    # Only the (q1, a1) pair becomes an item; the SESSION_END_PROPOSAL is not paired.
+    assert len(items) == 1
+
+
+async def test_approve_session_resolves_per_item_topic(db: DbSession) -> None:
+    """A teaching turn whose topic_path differs from the session's mints under that topic."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    # Start session against a different topic than what the LLM teaches.
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Overview",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).all()
+    assert len(items) == 1
+    item_topic = db.get(Topic, items[0].topic_id)
+    assert item_topic is not None
+    # ParsedTurn topic_path was "Python > Data Types > Integers", not "Python > Overview"
+    assert item_topic.path == "Python > Data Types > Integers"
+
+
+async def test_approve_session_rejects_non_in_progress_session(db: DbSession) -> None:
+    """A session already completed cannot be approved again."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        topic_path="Python > Data Types > Integers",
+    )
+    session.state = SessionState.COMPLETED
+    db.commit()
+
+    with pytest.raises(SessionServiceError, match="expected in_progress"):
+        await approve_session(db=db, session_id=session.id)
+
+
+async def test_approve_session_rejects_unknown_session(db: DbSession) -> None:
+    """An unknown session id raises a clear error."""
+    with pytest.raises(SessionServiceError, match="not found"):
+        await approve_session(
+            db=db,
+            session_id="00000000-0000-0000-0000-000000000000",
+        )
