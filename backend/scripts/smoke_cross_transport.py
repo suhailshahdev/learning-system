@@ -63,11 +63,8 @@ REQUIRED_DELIMITERS = (
 
 async def run_round_trip(name: str, transport: LLMTransport[Any]) -> None:
     """Test 1: trivial single round-trip."""
-    print(f"  [{name}] round-trip: opening chat...")
-    chat = await transport.start_new_chat(TEST_INTRO)
-
-    print(f"  [{name}] round-trip: sending prompt...")
-    response = await transport.send(chat, ROUND_TRIP_PROMPT)
+    print(f"  [{name}] round-trip: opening chat with combined intro and prompt...")
+    chat, response = await transport.start_new_chat(TEST_INTRO, ROUND_TRIP_PROMPT)
 
     if not response.text.strip():
         raise RuntimeError(f"[{name}] empty response on round-trip")
@@ -84,11 +81,8 @@ async def run_delimited(name: str, transport: LLMTransport[Any]) -> None:
     produce parseable delimited output? Failures here change M4's
     plan; passes confirm a single prompt set is viable.
     """
-    print(f"  [{name}] delimited: opening chat...")
-    chat = await transport.start_new_chat(TEST_INTRO)
-
-    print(f"  [{name}] delimited: sending delimited prompt...")
-    response = await transport.send(chat, DELIMITED_PROMPT)
+    print(f"  [{name}] delimited: opening chat with combined intro and prompt...")
+    chat, response = await transport.start_new_chat(TEST_INTRO, DELIMITED_PROMPT)
 
     text = response.text
     missing = [d for d in REQUIRED_DELIMITERS if d not in text]

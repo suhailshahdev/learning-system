@@ -26,20 +26,20 @@ TEST_MESSAGE = "Reply with just the word 'acknowledged' and nothing else, please
 async def run_smoke() -> None:
     """Exercise the full transport lifecycle once."""
     settings = get_settings()
-
     print(f"Starting transport (model={settings.deepseek_model})...")
     async with DeepseekTransport(
         api_key=settings.deepseek_api_key.get_secret_value(),
         default_model=settings.deepseek_model,
     ) as transport:
         print("Transport started. Opening new chat...")
-        chat = await transport.start_new_chat(TEST_INTRO)
+        chat, first_response = await transport.start_new_chat(TEST_INTRO, TEST_MESSAGE)
         print(f"Chat started. Model: {chat.model}")
-        print(f"Message count after intro: {chat.message_count}")
+        print(f"Message count after first send: {chat.message_count}")
         print(f"History length: {len(chat.history)}")
+        print(f"First response: {first_response.text!r}")
 
-        print("\nSending test message...")
-        response = await transport.send(chat, TEST_MESSAGE)
+        print("\nSending follow-up message...")
+        response = await transport.send(chat, "Now reply with the word 'understood'.")
         print(f"Response: {response.text!r}")
         print(f"Final message count: {chat.message_count}")
         print(f"Final history length: {len(chat.history)}")

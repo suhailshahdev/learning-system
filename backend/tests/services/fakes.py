@@ -55,11 +55,22 @@ class FakeTransport:
         self._raise_on_send = raise_on_send
         self.chats: list[FakeChatHandle] = []
 
-    async def start_new_chat(self, system_intro: str) -> FakeChatHandle:
+    async def start_new_chat(
+        self, system_intro: str, first_message: str
+    ) -> tuple[FakeChatHandle, TransportResponse]:
+        if self._raise_on_send is not None:
+            raise self._raise_on_send
+        if not self._responses:
+            raise RuntimeError(
+                "FakeTransport exhausted: start_new_chat() called but no canned responses left."
+            )
+
         chat = FakeChatHandle()
         chat.messages_sent.append(system_intro)
+        chat.messages_sent.append(first_message)
+        chat.message_count += 1
         self.chats.append(chat)
-        return chat
+        return chat, TransportResponse(text=self._responses.popleft())
 
     async def resume_chat(self, metadata: ChatResumeMetadata) -> FakeChatHandle:
         chat = FakeChatHandle(

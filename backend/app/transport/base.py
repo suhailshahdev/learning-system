@@ -82,8 +82,17 @@ class LLMTransport(Protocol[Handle]):
     and passed through send and close.
     """
 
-    async def start_new_chat(self, system_intro: str) -> Handle:
-        """Open a fresh chat seeded with the given system intro."""
+    async def start_new_chat(
+        self, system_intro: str, first_message: str
+    ) -> tuple[Handle, TransportResponse]:
+        """Open a fresh chat with the intro and send the first user message.
+
+        Returns the handle and the assistant's response to the first
+        message. Combining intro and first message into one call lets
+        transports that have no native system-role channel (claude.ai)
+        avoid producing a separate onboarding turn before the real
+        teaching turn lands.
+        """
         ...
 
     async def resume_chat(self, metadata: ChatResumeMetadata) -> Handle:

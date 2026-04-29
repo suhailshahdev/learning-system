@@ -39,6 +39,7 @@ STREAMING_DONE_VALUE = "false"
 
 PAGE_LOAD_TIMEOUT_MS = 30_000
 INPUT_READY_TIMEOUT_MS = 10_000
+HISTORY_LOAD_TIMEOUT_MS = 15_000
 RESPONSE_START_TIMEOUT_MS = 30_000
 RESPONSE_DONE_TIMEOUT_MS = 5 * 60_000
 
@@ -69,6 +70,12 @@ class PlaywrightClaudeTransport:
         self._profile_path = chrome_profile_path
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
+        # claude.ai treats two Pages on the same /chat/<uuid> URL as a
+        # conflict: one renders the assistant messages, the other does not.
+        # The transport keeps Pages alive across calls and reuses them when
+        # resume_chat targets a URL it already owns. Bug verified by the
+        # debug_resume_dom script
+        self._pages_by_url: dict[str, Page] = {}
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -102,6 +109,7 @@ class PlaywrightClaudeTransport:
 
     async def shutdown(self) -> None:
         """Close the browser context and stop Playwright."""
+        self._pages_by_url.clear()
         if self._context is not None:
             await self._context.close()
             self._context = None
@@ -109,7 +117,9 @@ class PlaywrightClaudeTransport:
             await self._playwright.stop()
             self._playwright = None
 
-    async def start_new_chat(self, system_intro: str) -> PlaywrightChatHandle:
+    async def start_new_chat(
+        self, system_intro: str, first_message: str
+    ) -> tuple[PlaywrightChatHandle, TransportResponse]:
         if self._context is None:
             raise TransportError("Transport not started. Call start() first.")
 
@@ -124,8 +134,15 @@ class PlaywrightClaudeTransport:
             ) from e
 
         handle = PlaywrightChatHandle(page=page)
-        await self._send_and_capture(handle, system_intro)
-        return handle
+        combined = f"{system_intro}\n\n{first_message}"
+        response = await self._send_and_capture(handle, combined)
+
+        # The chat URL is assigned by claude.ai after the first message.
+        # Register the Page now so resume_chat can reuse it later.
+        if handle.chat_url is not None:
+            self._pages_by_url[handle.chat_url] = page
+
+        return handle, response
 
     async def resume_chat(self, metadata: ChatResumeMetadata) -> PlaywrightChatHandle:
         if self._context is None:
@@ -134,26 +151,35 @@ class PlaywrightClaudeTransport:
         if metadata.chat_url is None:
             raise TransportError("Cannot resume Playwright chat without chat_url.")
 
+        # Warm path: a Page is already open on this URL from start_new_chat
+        # earlier in the same process. Reuse it — opening a second Page on
+        # the same URL leaves the second one with an empty assistant slot.
+        existing_page = self._pages_by_url.get(metadata.chat_url)
+        if existing_page is not None and not existing_page.is_closed():
+            return PlaywrightChatHandle(
+                page=existing_page,
+                chat_url=metadata.chat_url,
+                message_count=metadata.message_count,
+            )
+
+        # Cold path: no Page in memory (process restart, or close was
+        # called). Open a fresh Page on the URL and verify history loaded.
         page = await self._context.new_page()
         try:
             await page.goto(metadata.chat_url, timeout=PAGE_LOAD_TIMEOUT_MS)
             await page.wait_for_selector(INPUT_SELECTOR, timeout=INPUT_READY_TIMEOUT_MS)
-            # Verify the chat history loaded; a 404 or auth redirect would
-            # leave us with the input box but zero assistant messages, and
-            # the next send would silently start a new chat.
-            existing = await page.locator(ASSISTANT_MESSAGE_SELECTOR).count()
-            if existing == 0:
-                await page.close()
-                raise TransportError(
-                    f"Chat URL {metadata.chat_url} loaded but has no assistant messages. "
-                    "The chat may have been deleted on claude.ai."
-                )
+            await page.wait_for_selector(
+                ASSISTANT_MESSAGE_SELECTOR, timeout=HISTORY_LOAD_TIMEOUT_MS
+            )
         except PlaywrightTimeout as e:
             await page.close()
             raise TransportError(
-                f"Could not reach {metadata.chat_url} or input never appeared.", cause=e
+                f"Could not load chat history at {metadata.chat_url}. "
+                "The chat may have been deleted, or claude.ai's DOM may have changed.",
+                cause=e,
             ) from e
 
+        self._pages_by_url[metadata.chat_url] = page
         return PlaywrightChatHandle(
             page=page,
             chat_url=metadata.chat_url,
@@ -166,6 +192,8 @@ class PlaywrightClaudeTransport:
         return await self._send_and_capture(chat, message)
 
     async def close(self, chat: PlaywrightChatHandle) -> None:
+        if chat.chat_url is not None:
+            self._pages_by_url.pop(chat.chat_url, None)
         if not chat.page.is_closed():
             await chat.page.close()
 

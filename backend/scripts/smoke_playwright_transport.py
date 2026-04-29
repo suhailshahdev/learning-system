@@ -29,12 +29,13 @@ async def run_smoke() -> None:
     print("Starting transport...")
     async with PlaywrightClaudeTransport(PROFILE_PATH) as transport:
         print("Transport started. Opening new chat...")
-        chat = await transport.start_new_chat(TEST_INTRO)
+        chat, first_response = await transport.start_new_chat(TEST_INTRO, TEST_MESSAGE)
         print(f"Chat started. URL: {chat.chat_url}")
-        print(f"Message count after intro: {chat.message_count}")
+        print(f"Message count after first send: {chat.message_count}")
+        print(f"First response: {first_response.text!r}")
 
-        print("\nSending test message...")
-        response = await transport.send(chat, TEST_MESSAGE)
+        print("\nSending follow-up message...")
+        response = await transport.send(chat, "Now reply with the word 'understood'.")
         print(f"Response: {response.text!r}")
         print(f"Final URL: {chat.chat_url}")
         print(f"Final message count: {chat.message_count}")
@@ -42,6 +43,7 @@ async def run_smoke() -> None:
         print("\nClosing chat...")
         await transport.close(chat)
         print("Chat closed.")
+
     print("\nSmoke test complete.")
 
 

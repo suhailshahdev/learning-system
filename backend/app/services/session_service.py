@@ -80,8 +80,7 @@ async def start_session(
     first_prompt = build_first_prompt(topic_path)
 
     try:
-        chat = await transport.start_new_chat(intro)
-        response = await transport.send(chat, first_prompt)
+        chat, response = await transport.start_new_chat(intro, first_prompt)
     except TransportError as e:
         db.rollback()
         raise SessionServiceError(

@@ -115,19 +115,16 @@ class DeepseekTransport:
             await self._client.aclose()
             self._client = None
 
-    async def start_new_chat(self, system_intro: str) -> DeepseekChatHandle:
+    async def start_new_chat(
+        self, system_intro: str, first_message: str
+    ) -> tuple[DeepseekChatHandle, TransportResponse]:
         if self._client is None:
             raise TransportError("Transport not started. Call start() first.")
 
         handle = DeepseekChatHandle(model=self._default_model)
         handle.history.append(Message(role="system", content=system_intro))
-
-        # Sending an opening turn keeps both transports symmetric: after
-        # start_new_chat returns, the model has acknowledged the intro
-        # in both. Without this, the DeepSeek handle would have one fewer
-        # round-trip than the Playwright one at the same point in the flow.
-        await self._send_and_capture(handle, "Acknowledge the instructions above with one word.")
-        return handle
+        response = await self._send_and_capture(handle, first_message)
+        return handle, response
 
     async def resume_chat(self, metadata: ChatResumeMetadata) -> DeepseekChatHandle:
         if self._client is None:
