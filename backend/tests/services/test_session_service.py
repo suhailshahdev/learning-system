@@ -20,6 +20,7 @@ from app.models import (
     SessionTurn,
     Topic,
     TopicStatus,
+    TransportKind,
     TurnRole,
 )
 from app.schemas.parsed_response import ParsedTurn
@@ -76,6 +77,7 @@ async def test_start_session_persists_session_and_turns(db: DbSession) -> None:
     session, parsed = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -102,6 +104,20 @@ async def test_start_session_persists_session_and_turns(db: DbSession) -> None:
     assert turns[1].parsed is not None
 
 
+async def test_start_session_persists_transport_kind(db: DbSession) -> None:
+    """The transport_kind passed in is persisted on the session row."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.CLAUDE_PLAYWRIGHT,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    assert session.transport_kind == TransportKind.CLAUDE_PLAYWRIGHT
+
+
 async def test_start_session_creates_topic_if_missing(db: DbSession) -> None:
     """A topic at the given path is created when it does not already exist."""
     assert db.query(Topic).count() == 0
@@ -110,6 +126,7 @@ async def test_start_session_creates_topic_if_missing(db: DbSession) -> None:
     await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -136,6 +153,7 @@ async def test_start_session_reuses_existing_topic(db: DbSession) -> None:
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -151,6 +169,7 @@ async def test_start_session_raises_on_parse_failure(db: DbSession) -> None:
         await start_session(
             db=db,
             transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
         )
 
@@ -170,6 +189,7 @@ async def test_start_session_raises_on_transport_error(db: DbSession) -> None:
         await start_session(
             db=db,
             transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
         )
 
@@ -186,6 +206,7 @@ async def test_start_session_raises_on_wrong_response_kind(db: DbSession) -> Non
         await start_session(
             db=db,
             transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
         )
 
@@ -222,6 +243,7 @@ async def test_send_user_answer_persists_user_and_assistant_turns(db: DbSession)
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -261,6 +283,7 @@ async def test_send_user_answer_rebuilds_chat_metadata(db: DbSession) -> None:
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -289,6 +312,7 @@ async def test_send_user_answer_rejects_non_in_progress_session(db: DbSession) -
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     session.state = SessionState.COMPLETED
@@ -322,6 +346,7 @@ async def test_send_user_answer_rolls_back_on_parse_failure(db: DbSession) -> No
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     turns_before = db.query(SessionTurn).count()
@@ -368,6 +393,7 @@ async def test_approve_session_mints_learned_items_and_completes(db: DbSession) 
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     await send_user_answer(
@@ -403,6 +429,7 @@ async def test_approve_session_skips_unanswered_teaching_turn(db: DbSession) -> 
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
 
@@ -419,6 +446,7 @@ async def test_approve_session_uses_placeholder_for_open_answer(db: DbSession) -
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     await send_user_answer(
@@ -442,6 +470,7 @@ async def test_approve_session_skips_session_end_turn(db: DbSession) -> None:
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     await send_user_answer(
@@ -465,6 +494,7 @@ async def test_approve_session_resolves_per_item_topic(db: DbSession) -> None:
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Overview",
     )
     await send_user_answer(
@@ -490,6 +520,7 @@ async def test_approve_session_rejects_non_in_progress_session(db: DbSession) ->
     session, _ = await start_session(
         db=db,
         transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
     session.state = SessionState.COMPLETED

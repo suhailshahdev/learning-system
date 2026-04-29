@@ -18,7 +18,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPrimaryKey
-from app.models.enums import LearningMode, SessionState
+from app.models.enums import LearningMode, SessionState, TransportKind
 
 if TYPE_CHECKING:
     from app.models.learned_item import LearnedItem
@@ -45,6 +45,10 @@ class Session(Base, UUIDPrimaryKey, Timestamps):
     )
     claude_chat_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     claude_chat_message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    transport_kind: Mapped[TransportKind] = mapped_column(
+        SQLEnum(TransportKind, native_enum=False, length=32),
+        nullable=False,
+    )
     parent_session_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("session.id", ondelete="SET NULL"), nullable=True
     )

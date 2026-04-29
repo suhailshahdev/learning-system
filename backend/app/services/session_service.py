@@ -25,6 +25,7 @@ from app.models import (
     SessionTurn,
     Topic,
     TopicStatus,
+    TransportKind,
     TurnRole,
 )
 from app.prompts.first_prompt import build_first_prompt
@@ -63,6 +64,7 @@ async def start_session(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    transport_kind: TransportKind,
     topic_path: str,
 ) -> tuple[Session, ParsedTurn]:
     """Start a fresh session on the given topic.
@@ -71,6 +73,10 @@ async def start_session(
     sends the first prompt, parses the response, and persists the
     Session plus the system and assistant turns. Commits on
     success and rolls back on any failure.
+
+    transport_kind names which transport opened the chat. Stored
+    on the session row so follow-up turns can route to the right
+    resume_chat without inspecting the transport instance.
 
     Returns the persisted Session and the parsed first turn.
     """
@@ -99,7 +105,12 @@ async def start_session(
             f"Expected a teaching turn on session start, got {parsed.kind!r}.",
         )
 
-    session = _build_session(topic=topic, parsed=parsed, chat=chat)
+    session = _build_session(
+        topic=topic,
+        parsed=parsed,
+        chat=chat,
+        transport_kind=transport_kind,
+    )
     db.add(session)
     db.flush()  # populates session.id for FK on the turns
 
@@ -243,12 +254,19 @@ def _get_or_create_topic(db: DbSession, path: str) -> Topic:
     return topic
 
 
-def _build_session(*, topic: Topic, parsed: ParsedTurn, chat: Any) -> Session:
+def _build_session(
+    *,
+    topic: Topic,
+    parsed: ParsedTurn,
+    chat: Any,
+    transport_kind: TransportKind,
+) -> Session:
     """Construct an in-memory Session for the new session start."""
     return Session(
         topic_id=topic.id,
         mode_used=parsed.mode,
         state=SessionState.IN_PROGRESS,
+        transport_kind=transport_kind,
         claude_chat_url=getattr(chat, "chat_url", None),
         claude_chat_message_count=getattr(chat, "message_count", 0),
         active_preferences=[],

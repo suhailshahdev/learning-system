@@ -92,3 +92,14 @@ class LearningMode(StrEnum):
     MULTIPLE_CHOICE = "multiple_choice"
     EXPLAIN_BACK = "explain_back"
     SOCRATIC = "socratic"
+
+
+class TransportKind(StrEnum):
+    """Which LLM transport opened a chat. Used by `session.transport_kind`.
+
+    A follow-up turn needs to know which transport's resume_chat to
+    call; the column makes that routing decision durable.
+    """
+
+    CLAUDE_PLAYWRIGHT = "claude_playwright"
+    DEEPSEEK = "deepseek"

@@ -14,6 +14,7 @@ from app.models.enums import (
     LearningMode,
     SessionState,
     TopicStatus,
+    TransportKind,
     TurnRole,
 )
 from app.models.error_log import ErrorLog
@@ -43,6 +44,7 @@ __all__ = [
     "Timestamps",
     "Topic",
     "TopicStatus",
+    "TransportKind",
     "TurnRole",
     "UUIDPrimaryKey",
     "UserKnowledgeAssertion",

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.models import LearnedItem
+from app.models import LearnedItem, TransportKind
 from app.services.session_service import (
     SessionServiceError,
     approve_session,
@@ -53,7 +53,11 @@ SMOKE_TOPIC_PATH = "Python > Data Types > Integers"
 TransportChoice = Literal["deepseek", "playwright", "all"]
 
 
-async def smoke_one(name: str, transport: LLMTransport[Any]) -> None:
+async def smoke_one(
+    name: str,
+    transport: LLMTransport[Any],
+    transport_kind: TransportKind,
+) -> None:
     """Run start_session and one follow-up against the given transport."""
     print(f"=== {name} ===")
     print(f"  topic_path: {SMOKE_TOPIC_PATH}")
@@ -62,6 +66,7 @@ async def smoke_one(name: str, transport: LLMTransport[Any]) -> None:
         session, parsed = await start_session(
             db=db,
             transport=transport,
+            transport_kind=transport_kind,
             topic_path=SMOKE_TOPIC_PATH,
         )
 
@@ -117,12 +122,20 @@ async def run(choice: TransportChoice) -> None:
             api_key=settings.deepseek_api_key.get_secret_value(),
             default_model=settings.deepseek_model,
         ) as ds:
-            await smoke_one(f"DeepSeek/{settings.deepseek_model}", ds)
+            await smoke_one(
+                f"DeepSeek/{settings.deepseek_model}",
+                ds,
+                TransportKind.DEEPSEEK,
+            )
 
     if choice in {"playwright", "all"}:
         print("Starting Playwright transport...\n")
         async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
-            await smoke_one("Playwright/claude.ai", pw)
+            await smoke_one(
+                "Playwright/claude.ai",
+                pw,
+                TransportKind.CLAUDE_PLAYWRIGHT,
+            )
 
     print("Smoke complete.")
 
