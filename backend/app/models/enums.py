@@ -67,11 +67,18 @@ class SessionState(StrEnum):
 
 
 class TurnRole(StrEnum):
-    """Who produced a turn. Used by `session_turn.role`."""
+    """Who produced a turn. Used by `session_turn.role`.
+
+    TRANSITION marks the boundary between the old chat and the new
+    chat when a session crosses the per-chat message threshold. The
+    turn's raw_content holds the handover block that was carried
+    over.
+    """
 
     ASSISTANT = "assistant"
     USER = "user"
     SYSTEM = "system"
+    TRANSITION = "transition"
 
 
 class LearnedItemStatus(StrEnum):

@@ -36,6 +36,7 @@ from app.services.parser import parse_response
 from app.transport.base import (
     ChatResumeMetadata,
     PriorMessage,
+    PriorRole,
     TransportError,
 )
 
@@ -207,19 +208,32 @@ def _next_turn_index(db: DbSession, session_id: str) -> int:
     return 0 if last is None else last.turn_index + 1
 
 
+# Maps DB-side TurnRole values to transport-side PriorRole literals.
+# TRANSITION turns are persistence-only markers (they record where a
+# chat handover happened) and do not belong in replay history.
+_PRIOR_ROLE_BY_TURN_ROLE: dict[TurnRole, PriorRole] = {
+    TurnRole.SYSTEM: "system",
+    TurnRole.USER: "user",
+    TurnRole.ASSISTANT: "assistant",
+}
+
+
 def _rebuild_chat_metadata(session: Session) -> ChatResumeMetadata:
     """Build ChatResumeMetadata from a persisted session and its turns.
 
     chat_url comes straight from the session row. prior_messages is
-    rebuilt from session_turn rows in turn order, and transports that
-    only need chat_url (Playwright) ignore it. Each turn's role is
-    mapped to the transport-side PriorRole literal.
+    rebuilt from session_turn rows in turn order, skipping turns that
+    do not represent real conversation messages (TRANSITION). Transports
+    that only need chat_url (Playwright) ignore prior_messages entirely.
     """
     prior_messages: list[PriorMessage] = []
     for turn in session.turns:
+        prior_role = _PRIOR_ROLE_BY_TURN_ROLE.get(turn.role)
+        if prior_role is None:
+            continue
         prior_messages.append(
             PriorMessage(
-                role=turn.role.value,
+                role=prior_role,
                 content=turn.raw_content,
             )
         )
