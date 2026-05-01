@@ -33,6 +33,7 @@ from app.prompts.handover_prompt import build_handover_request
 from app.prompts.intro import build_intro
 from app.prompts.turn_prompt import build_turn_prompt
 from app.schemas.parsed_response import ParsedHandover, ParsedResponse, ParsedTurn
+from app.services.knowledge_service import derive_assertions_for_session
 from app.services.parser import parse_response
 from app.services.prereq_service import PrereqsUnmetError, check_prerequisites
 from app.transport.base import (
@@ -595,6 +596,12 @@ async def approve_session(*, db: DbSession, session_id: str) -> Session:
 
     for item in items:
         db.add(item)
+
+    # Flush so derivation's queries see the items we just minted alongside
+    # any historical items for the same (topic, difficulty) pair.
+    db.flush()
+
+    derive_assertions_for_session(db, session)
     session.state = SessionState.COMPLETED
 
     db.commit()

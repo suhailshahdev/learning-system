@@ -691,6 +691,57 @@ async def test_approve_session_rejects_unknown_session(db: DbSession) -> None:
         )
 
 
+async def test_approve_session_runs_derivation_within_transaction(db: DbSession) -> None:
+    """Approving a session that minted enough items lands the derived assertion."""
+    # Four canned responses: one for start_session, three for follow-ups.
+    # Three send_user_answer calls produce three answered (assistant, user)
+    # pairs, which mint three learned items at beginner difficulty on the
+    # same topic — exactly DERIVATION_THRESHOLD.
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            SECOND_TURN_RESPONSE,
+            VALID_TURN_RESPONSE,
+            SECOND_TURN_RESPONSE,
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="1",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    derived = (
+        db.query(UserKnowledgeAssertion)
+        .filter(UserKnowledgeAssertion.source == AssertionSource.DERIVED_FROM_LEARNED_ITEMS)
+        .all()
+    )
+    assert len(derived) == 1
+    assert derived[0].topic_path == "Python > Data Types > Integers"
+    assert derived[0].difficulty == Difficulty.BEGINNER
+
+
 HANDOVER_RESPONSE = """\
 ---HANDOVER---
 DOMAIN_FOCUS: Python
