@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from app.models import (
+    AssertionSource,
+    Difficulty,
     LearnedItem,
     LearnedItemStatus,
     LearningMode,
@@ -22,9 +24,11 @@ from app.models import (
     TopicStatus,
     TransportKind,
     TurnRole,
+    UserKnowledgeAssertion,
 )
 from app.schemas.parsed_response import ParsedTurn
 from app.services.parser import ParseError
+from app.services.prereq_service import PrereqsUnmetError
 from app.services.session_service import (
     HANDOVER_THRESHOLD,
     OPEN_ANSWER_PLACEHOLDER,
@@ -67,6 +71,29 @@ arithmetic, integer-division
 SESSION_END_RESPONSE = """\
 ---SESSION_END_PROPOSAL---
 Covered the basics of Python integer division.
+---END---
+"""
+
+
+PREREQ_TURN_RESPONSE = """\
+---TOPIC---
+FastAPI > Routing > Path Parameters
+---DIFFICULTY---
+intermediate
+---PREREQUISITES---
+Python > Basics:beginner, HTTP & APIs > Methods:beginner
+---MODE---
+flashcard
+---QUESTION---
+What does the type annotation in a path parameter do?
+---EXPECTED_ANSWER---
+It tells FastAPI to convert and validate the value at request time.
+---REQUIREMENTS---
+NONE
+---FOLLOWUP---
+NONE
+---TAGS---
+fastapi, routing
 ---END---
 """
 
@@ -163,7 +190,7 @@ async def test_start_session_reuses_existing_topic(db: DbSession) -> None:
 
 
 async def test_start_session_raises_on_parse_failure(db: DbSession) -> None:
-    """Garbage from the LLM raises SessionServiceError; nothing is committed."""
+    """Garbage from the LLM raises SessionServiceError, nothing is committed."""
     transport = FakeTransport(responses=["not a delimited response"])
 
     with pytest.raises(SessionServiceError) as exc:
@@ -180,7 +207,7 @@ async def test_start_session_raises_on_parse_failure(db: DbSession) -> None:
 
 
 async def test_start_session_raises_on_transport_error(db: DbSession) -> None:
-    """A transport failure raises SessionServiceError; nothing is committed."""
+    """A transport failure raises SessionServiceError and nothing is committed."""
     transport = FakeTransport(
         responses=[],
         raise_on_send=TransportError("simulated network error"),
@@ -200,7 +227,7 @@ async def test_start_session_raises_on_transport_error(db: DbSession) -> None:
 
 
 async def test_start_session_raises_on_wrong_response_kind(db: DbSession) -> None:
-    """A SESSION_END_PROPOSAL on session start is an LLM bug; raises."""
+    """A SESSION_END_PROPOSAL on session start is an LLM bug and raises an error."""
     transport = FakeTransport(responses=[SESSION_END_RESPONSE])
 
     with pytest.raises(SessionServiceError, match="Expected a teaching turn"):
@@ -213,6 +240,130 @@ async def test_start_session_raises_on_wrong_response_kind(db: DbSession) -> Non
 
     assert db.query(Session).count() == 0
     assert db.query(SessionTurn).count() == 0
+
+
+async def test_start_session_persists_topic_prerequisites(db: DbSession) -> None:
+    """The first ParsedTurn's prereqs land on the topic row for later checks."""
+    transport = FakeTransport(responses=[PREREQ_TURN_RESPONSE])
+
+    await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="FastAPI > Routing > Path Parameters",
+    )
+
+    topic = db.query(Topic).filter(Topic.path == "FastAPI > Routing > Path Parameters").one()
+    assert topic.prerequisites == [
+        {"topic_path": "Python > Basics", "min_difficulty": "beginner"},
+        {"topic_path": "HTTP & APIs > Methods", "min_difficulty": "beginner"},
+    ]
+
+
+async def test_start_session_does_not_overwrite_existing_topic_prerequisites(
+    db: DbSession,
+) -> None:
+    """A topic with prereqs already set is not overwritten by later sessions."""
+    existing = Topic(
+        path="FastAPI > Routing > Path Parameters",
+        domain="FastAPI",
+        name="Path Parameters",
+        status=TopicStatus.IN_PROGRESS,
+        prerequisites=[
+            {"topic_path": "Python > Basics", "min_difficulty": "advanced"},
+        ],
+    )
+    db.add(existing)
+    # Pre-satisfy that prereq so the session start does not raise.
+    db.add(
+        UserKnowledgeAssertion(
+            topic_path="Python > Basics",
+            difficulty=Difficulty.ADVANCED,
+            source=AssertionSource.SELF_DECLARED,
+        )
+    )
+    db.commit()
+
+    transport = FakeTransport(responses=[PREREQ_TURN_RESPONSE])
+    await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="FastAPI > Routing > Path Parameters",
+    )
+
+    db.refresh(existing)
+    # Original prereqs preserved. LLM's new declaration ignored.
+    assert existing.prerequisites == [
+        {"topic_path": "Python > Basics", "min_difficulty": "advanced"},
+    ]
+
+
+async def test_start_session_raises_on_unmet_prerequisite(db: DbSession) -> None:
+    """A topic with stored unmet prereqs raises before any transport call."""
+    db.add(
+        Topic(
+            path="FastAPI > Routing > Path Parameters",
+            domain="FastAPI",
+            name="Path Parameters",
+            status=TopicStatus.NOT_STARTED,
+            prerequisites=[
+                {"topic_path": "Python > Basics", "min_difficulty": "intermediate"},
+            ],
+        )
+    )
+    db.commit()
+
+    transport = FakeTransport(responses=[])  # no responses needed, transport is never called
+
+    with pytest.raises(PrereqsUnmetError) as exc:
+        await start_session(
+            db=db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            topic_path="FastAPI > Routing > Path Parameters",
+        )
+
+    assert len(exc.value.unmet) == 1
+    assert exc.value.unmet[0].topic_path == "Python > Basics"
+    assert exc.value.unmet[0].min_difficulty == Difficulty.INTERMEDIATE
+    assert exc.value.unmet[0].asserted_difficulty is None
+    # No DB writes from the failed start.
+    assert db.query(Session).count() == 0
+    assert db.query(SessionTurn).count() == 0
+
+
+async def test_start_session_proceeds_when_prerequisites_satisfied(db: DbSession) -> None:
+    """A topic with all prereqs satisfied starts normally."""
+    db.add(
+        Topic(
+            path="FastAPI > Routing > Path Parameters",
+            domain="FastAPI",
+            name="Path Parameters",
+            status=TopicStatus.NOT_STARTED,
+            prerequisites=[
+                {"topic_path": "Python > Basics", "min_difficulty": "beginner"},
+            ],
+        )
+    )
+    db.add(
+        UserKnowledgeAssertion(
+            topic_path="Python > Basics",
+            difficulty=Difficulty.INTERMEDIATE,
+            source=AssertionSource.SELF_DECLARED,
+        )
+    )
+    db.commit()
+
+    transport = FakeTransport(responses=[PREREQ_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="FastAPI > Routing > Path Parameters",
+    )
+
+    assert session.state == SessionState.IN_PROGRESS
 
 
 SECOND_TURN_RESPONSE = """\
@@ -389,7 +540,7 @@ integers
 
 
 async def test_approve_session_mints_learned_items_and_completes(db: DbSession) -> None:
-    """Happy path: each Q/A pair becomes a learned_item; session goes COMPLETED."""
+    """Happy path: each Q/A pair becomes a learned_item and session goes COMPLETED."""
     transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
     session, _ = await start_session(
         db=db,
@@ -484,7 +635,7 @@ async def test_approve_session_skips_session_end_turn(db: DbSession) -> None:
     await approve_session(db=db, session_id=session.id)
 
     items = db.query(LearnedItem).all()
-    # Only the (q1, a1) pair becomes an item; the SESSION_END_PROPOSAL is not paired.
+    # Only the (q1, a1) pair becomes an item. The SESSION_END_PROPOSAL is not paired.
     assert len(items) == 1
 
 
@@ -544,7 +695,7 @@ HANDOVER_RESPONSE = """\
 ---HANDOVER---
 DOMAIN_FOCUS: Python
 COVERED: Iterators (intermediate)
-LAST_QUESTION: Asked about iter() vs next(); user answered correctly.
+LAST_QUESTION: Asked about iter() vs next(), user answered correctly.
 NEXT_PLANNED: Generators
 OPEN_THREADS: NONE
 USER_STATE: Engaged

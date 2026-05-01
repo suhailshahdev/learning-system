@@ -34,6 +34,7 @@ from app.prompts.intro import build_intro
 from app.prompts.turn_prompt import build_turn_prompt
 from app.schemas.parsed_response import ParsedHandover, ParsedResponse, ParsedTurn
 from app.services.parser import parse_response
+from app.services.prereq_service import PrereqsUnmetError, check_prerequisites
 from app.transport.base import (
     ChatResumeMetadata,
     PriorMessage,
@@ -84,6 +85,10 @@ async def start_session(
     """
     topic = _get_or_create_topic(db, topic_path)
 
+    unmet = check_prerequisites(db, topic_path)
+    if unmet:
+        raise PrereqsUnmetError(unmet)
+
     intro = build_intro()
     first_prompt = build_first_prompt(topic_path)
 
@@ -106,6 +111,8 @@ async def start_session(
         raise SessionServiceError(
             f"Expected a teaching turn on session start, got {parsed.kind!r}.",
         )
+
+    _populate_topic_prerequisites(topic, parsed)
 
     session = _build_session(
         topic=topic,
@@ -489,6 +496,20 @@ def _get_or_create_topic(db: DbSession, path: str) -> Topic:
     db.add(topic)
     db.flush()
     return topic
+
+
+def _populate_topic_prerequisites(topic: Topic, parsed: ParsedTurn) -> None:
+    """Write the first response's prereqs onto the topic if not already set.
+
+    Topics start with empty prerequisites. The first parsed turn for
+    a topic fills them in from the LLM's response. After that the
+    column is left alone since later sessions should not silently
+    overwrite the original list. Manual edits via the topic editor
+    are the right place to revise them.
+    """
+    if topic.prerequisites:
+        return
+    topic.prerequisites = [p.model_dump(mode="json") for p in parsed.prerequisites]
 
 
 def _build_session(
