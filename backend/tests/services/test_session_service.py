@@ -26,6 +26,7 @@ from app.models import (
 from app.schemas.parsed_response import ParsedTurn
 from app.services.parser import ParseError
 from app.services.session_service import (
+    HANDOVER_THRESHOLD,
     OPEN_ANSWER_PLACEHOLDER,
     SessionServiceError,
     approve_session,
@@ -537,3 +538,152 @@ async def test_approve_session_rejects_unknown_session(db: DbSession) -> None:
             db=db,
             session_id="00000000-0000-0000-0000-000000000000",
         )
+
+
+HANDOVER_RESPONSE = """\
+---HANDOVER---
+DOMAIN_FOCUS: Python
+COVERED: Iterators (intermediate)
+LAST_QUESTION: Asked about iter() vs next(); user answered correctly.
+NEXT_PLANNED: Generators
+OPEN_THREADS: NONE
+USER_STATE: Engaged
+---END_HANDOVER---
+"""
+
+
+async def test_send_user_answer_below_threshold_uses_within_chat_path(db: DbSession) -> None:
+    """A session below the threshold takes the existing path: 2 new turns, no transition."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    # Force the session well below the threshold.
+    session.claude_chat_message_count = 1
+    db.commit()
+
+    parsed = await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    assert isinstance(parsed, ParsedTurn)
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # 2 turns from start_session + 2 turns from send_user_answer
+    assert len(turns) == 4
+    transition_turns = [t for t in turns if t.role == TurnRole.TRANSITION]
+    assert len(transition_turns) == 0
+
+
+async def test_send_user_answer_at_threshold_triggers_handover(db: DbSession) -> None:
+    """At threshold: handover request, new chat, 5 new turns persisted."""
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,  # session start
+            HANDOVER_RESPONSE,  # dying chat's handover response
+            SECOND_TURN_RESPONSE,  # new chat's first response
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    session.claude_chat_message_count = HANDOVER_THRESHOLD
+    db.commit()
+
+    parsed = await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    assert isinstance(parsed, ParsedTurn)
+    assert parsed.mode == LearningMode.TYPE_THE_ANSWER
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # 2 turns from start_session + 5 turns from the handover-driven send.
+    assert len(turns) == 7
+
+    # Verify the new turn shape across the transition: SYSTEM, ASSISTANT,
+    # TRANSITION, USER, ASSISTANT in that order.
+    new_turns = turns[2:]
+    assert [t.role for t in new_turns] == [
+        TurnRole.SYSTEM,
+        TurnRole.ASSISTANT,
+        TurnRole.TRANSITION,
+        TurnRole.USER,
+        TurnRole.ASSISTANT,
+    ]
+
+    transition_turn = new_turns[2]
+    assert transition_turn.parsed is not None
+    assert transition_turn.parsed["kind"] == "handover"
+    assert "---HANDOVER---" in transition_turn.raw_content
+    assert "DOMAIN_FOCUS: Python" in transition_turn.raw_content
+
+    # Three chats in total: the original from start_session, the resumed dying
+    # chat for the handover request, and the new chat opened post-handover.
+    assert len(transport.chats) == 3
+
+    # The session's chat URL and count should now reflect the new chat,
+    # not the dying one.
+    db.refresh(session)
+    assert session.claude_chat_message_count == 1
+
+
+async def test_send_user_answer_at_threshold_rolls_back_on_handover_failure(
+    db: DbSession,
+) -> None:
+    """If the handover request itself fails, no new turns persist."""
+    # raise_on_send_at=0 fails the first send() call after start_session.
+    # That first send() is the handover request. The setup leaves the
+    # session at threshold so send_user_answer takes the handover path
+    # and the failure fires there.
+    transport = FakeTransport(
+        responses=[VALID_TURN_RESPONSE],
+        raise_on_send=TransportError("simulated handover failure"),
+        raise_on_send_at=0,
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    session.claude_chat_message_count = HANDOVER_THRESHOLD
+    db.commit()
+
+    turns_before = db.query(SessionTurn).count()
+
+    with pytest.raises(SessionServiceError, match="handover request"):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer="3",
+        )
+
+    turns_after = db.query(SessionTurn).count()
+    assert turns_after == turns_before

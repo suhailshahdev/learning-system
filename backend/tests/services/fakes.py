@@ -50,21 +50,27 @@ class FakeTransport:
         responses: list[str],
         *,
         raise_on_send: TransportError | None = None,
+        raise_on_send_at: int | None = None,
     ) -> None:
         self._responses: deque[str] = deque(responses)
         self._raise_on_send = raise_on_send
+        self._raise_on_send_at = raise_on_send_at
+        self._send_call_count = 0
         self.chats: list[FakeChatHandle] = []
 
     async def start_new_chat(
         self, system_intro: str, first_message: str
     ) -> tuple[FakeChatHandle, TransportResponse]:
-        if self._raise_on_send is not None:
+        # When raise_on_send_at is set, the test wants a specific send()
+        # call to fail and start_new_chat is expected to succeed. When
+        # raise_on_send_at is None, the legacy behavior holds and any
+        # transport call raises.
+        if self._raise_on_send is not None and self._raise_on_send_at is None:
             raise self._raise_on_send
         if not self._responses:
             raise RuntimeError(
                 "FakeTransport exhausted: start_new_chat() called but no canned responses left."
             )
-
         chat = FakeChatHandle()
         chat.messages_sent.append(system_intro)
         chat.messages_sent.append(first_message)
@@ -82,8 +88,12 @@ class FakeTransport:
         return chat
 
     async def send(self, chat: FakeChatHandle, message: str) -> TransportResponse:
-        if self._raise_on_send is not None:
+        if self._raise_on_send is not None and (
+            self._raise_on_send_at is None or self._raise_on_send_at == self._send_call_count
+        ):
+            self._send_call_count += 1
             raise self._raise_on_send
+        self._send_call_count += 1
         chat.messages_sent.append(message)
         chat.message_count += 1
         if not self._responses:
