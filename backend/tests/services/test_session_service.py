@@ -33,6 +33,7 @@ from app.services.session_service import (
     HANDOVER_THRESHOLD,
     OPEN_ANSWER_PLACEHOLDER,
     SessionServiceError,
+    abandon_session,
     approve_session,
     send_user_answer,
     start_session,
@@ -889,3 +890,84 @@ async def test_send_user_answer_at_threshold_rolls_back_on_handover_failure(
 
     turns_after = db.query(SessionTurn).count()
     assert turns_after == turns_before
+
+
+async def test_abandon_session_marks_state_and_persists(db: DbSession) -> None:
+    """Happy path: state goes ABANDONED, no learned items, session row updated."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    refreshed = await abandon_session(db=db, session_id=session.id)
+
+    assert refreshed.state == SessionState.ABANDONED
+    assert db.query(LearnedItem).count() == 0
+
+
+async def test_abandon_session_preserves_partial_turns(db: DbSession) -> None:
+    """Session turns from the partial session stay intact for replay."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    turns_before = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
+    await abandon_session(db=db, session_id=session.id)
+    turns_after = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
+
+    assert turns_after == turns_before
+    assert turns_after == 4
+
+
+async def test_abandon_session_rejects_unknown_session(db: DbSession) -> None:
+    """An unknown session id raises a clear error."""
+    with pytest.raises(SessionServiceError, match="not found"):
+        await abandon_session(
+            db=db,
+            session_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
+async def test_abandon_session_rejects_completed_session(db: DbSession) -> None:
+    """A session already completed cannot be abandoned."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    session.state = SessionState.COMPLETED
+    db.commit()
+
+    with pytest.raises(SessionServiceError, match="expected in_progress"):
+        await abandon_session(db=db, session_id=session.id)
+
+
+async def test_abandon_session_rejects_already_abandoned(db: DbSession) -> None:
+    """A second abandon call on an already-abandoned session raises wrong-state."""
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    await abandon_session(db=db, session_id=session.id)
+
+    with pytest.raises(SessionServiceError, match="expected in_progress"):
+        await abandon_session(db=db, session_id=session.id)

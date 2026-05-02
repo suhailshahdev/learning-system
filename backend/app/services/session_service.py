@@ -658,3 +658,27 @@ def _build_learned_item(
         status=LearnedItemStatus.LEARNED,
         last_reviewed_at=now,
     )
+
+
+async def abandon_session(*, db: DbSession, session_id: str) -> Session:
+    """Abandon an in-progress session without minting learned items.
+
+    The user closing the tab or hitting "End session" without
+    approving lands here. No learned items are written: the partial
+    Q/A pairs from this session stay only as session_turn rows for
+    replay. Marks the session ABANDONED and commits.
+
+    Returns the refreshed Session.
+    """
+    session = db.get(Session, session_id)
+    if session is None:
+        raise SessionServiceError(f"Session {session_id!r} not found.")
+    if session.state is not SessionState.IN_PROGRESS:
+        raise SessionServiceError(
+            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
+        )
+
+    session.state = SessionState.ABANDONED
+    db.commit()
+    db.refresh(session)
+    return session

@@ -33,6 +33,7 @@ from app.schemas.session_api import (
 from app.services.parser import ParseError
 from app.services.session_service import (
     SessionServiceError,
+    abandon_session,
     approve_session,
     send_user_answer,
     start_session,
@@ -150,3 +151,17 @@ async def approve(
         raise _map_service_error(exc) from exc
 
     return SessionResponse.model_validate(completed)
+
+
+@router.post("/{session_id}/abandon", response_model=SessionResponse)
+async def abandon(
+    session_id: str,
+    db: DbSession,
+) -> SessionResponse:
+    """Abandon an in-progress session without minting learned items."""
+    try:
+        abandoned = await abandon_session(db=db, session_id=session_id)
+    except SessionServiceError as exc:
+        raise _map_service_error(exc) from exc
+
+    return SessionResponse.model_validate(abandoned)

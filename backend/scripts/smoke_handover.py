@@ -6,10 +6,10 @@ block, a new chat opens with that block seeded, and the user's
 answer flows through the new chat. Five new turns persist on success.
 
 Forces the message count to threshold rather than running 30 real
-turns; the smoke is testing the transition mechanism, not the
-counting. The resulting LLM handover content will be thin (it was
-asked to summarize after one turn) but that does not affect what
-this smoke validates: structural correctness of the transition.
+turns. This smoke tests the transition mechanism, not the
+counting. The handover content will be thin since it summarizes
+after one turn, but that does not affect what is being validated
+here.
 
 Run from backend/ with:
 
