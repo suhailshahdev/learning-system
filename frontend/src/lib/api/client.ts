@@ -20,16 +20,44 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
  */
 export type ApiErrorKind = "network" | "http" | "parse";
 
+/**
+ * Best-effort read of the `detail` field from a FastAPI error
+ * response. Returns undefined if the body is not JSON, is not an
+ * object, or has no string `detail`. Never throws.
+ */
+async function readErrorDetail(response: Response): Promise<string | undefined> {
+    try {
+        const json: unknown = await response.json();
+        if (
+            typeof json === "object"
+            && json !== null
+            && "detail" in json
+            && typeof (json as { detail: unknown }).detail === "string"
+        ) {
+            return (json as { detail: string }).detail;
+        }
+        return undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 export class ApiError extends Error {
     readonly kind: ApiErrorKind;
     readonly status: number | undefined;
+    readonly detail: string | undefined;
     override readonly cause: unknown;
 
-    constructor(kind: ApiErrorKind, message: string, options?: {status?: number; cause?: unknown}){
+    constructor(
+        kind: ApiErrorKind,
+        message: string,
+        options?: { status?: number; detail?: string; cause?: unknown },
+    ) {
         super(message);
         this.name = "ApiError";
         this.kind = kind;
         this.status = options?.status;
+        this.detail = options?.detail;
         this.cause = options?.cause;
     }
 }
@@ -70,9 +98,14 @@ export async function apiFetch<T> (path: string, options:ApiFetchOptions<T>): Pr
         throw new ApiError("network", `Network error reaching ${url}`, { cause: error });
     }
 
-    if(!response.ok){
-        throw new ApiError("http", `HTTP ${response.status} from ${url}`, {
-            status: response.status
+    if (!response.ok) {
+        const detail = await readErrorDetail(response);
+        const message = detail !== undefined
+            ? `HTTP ${response.status} from ${url}: ${detail}`
+            : `HTTP ${response.status} from ${url}`;
+        throw new ApiError("http", message, {
+            status: response.status,
+            ...(detail !== undefined ? { detail } : {}),
         });
     }
 
