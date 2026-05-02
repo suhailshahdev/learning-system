@@ -1,5 +1,6 @@
 import { ApiStatus } from "@/components/api-status";
 import { ModeToggle } from "@/components/mode-toggle";
+import { StartForm } from "@/components/session/start-form";
 
 export function Home(): React.JSX.Element {
   return (
@@ -8,11 +9,9 @@ export function Home(): React.JSX.Element {
         <ApiStatus />
         <ModeToggle />
       </header>
-      <main className="flex flex-col items-center justify-center gap-4 p-8">
+      <main className="flex flex-col items-center gap-8 p-8">
         <h1 className="text-3xl font-bold">Learning System</h1>
-        <p className="text-muted-foreground">
-          Frontend skeleton. shadcn wired, dark mode working.
-        </p>
+        <StartForm />
       </main>
     </div>
   );
