@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from app.models import (
+    ErrorLog,
     LearnedItem,
     LearnedItemStatus,
     Session,
@@ -64,6 +65,47 @@ class SessionServiceError(Exception):
         self.cause = cause
 
 
+def _log_service_error(
+    db: DbSession,
+    *,
+    kind: str,
+    message: str,
+    session_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    """Write one row to error_log and commit it.
+
+    Called from session-service catch blocks before the rollback and
+    re-raise. Commits on the same database session to keep test
+    isolation working.
+
+    Relies on one invariant: session-service functions do not write
+    any rows before the transport, parse, and validate block
+    completes. Every catch site fires while the session is clean, so
+    committing the log before rolling back is safe. If a future
+    function breaks this invariant, the log commit will also persist
+    any pending writes and break the all-or-nothing guarantee. Document
+    it there if that ever happens.
+
+    Errors inside this helper are swallowed so they do not mask the
+    original error being raised.
+    """
+    try:
+        row = ErrorLog(
+            session_id=session_id,
+            kind=kind,
+            message=message,
+            context=context or {},
+        )
+        db.add(row)
+        db.commit()
+    except Exception:
+        # The original error is more important than the failure to log it.
+        # Roll back the broken log write so the outer rollback does not
+        # see a poisoned session.
+        db.rollback()
+
+
 async def start_session(
     *,
     db: DbSession,
@@ -96,6 +138,13 @@ async def start_session(
     try:
         chat, response = await transport.start_new_chat(intro, first_prompt)
     except TransportError as e:
+        _log_service_error(
+            db,
+            kind="session.start.transport_failed",
+            message=e.message,
+            session_id=None,
+            context={"transport_kind": transport_kind.value, "topic_path": topic_path},
+        )
         db.rollback()
         raise SessionServiceError(
             f"Transport failed during session start: {e.message}", cause=e
@@ -104,10 +153,33 @@ async def start_session(
     try:
         parsed = parse_response(response.text)
     except Exception as e:
+        _log_service_error(
+            db,
+            kind="session.start.parse_failed",
+            message=str(e),
+            session_id=None,
+            context={
+                "transport_kind": transport_kind.value,
+                "topic_path": topic_path,
+                "raw_response": response.text,
+            },
+        )
         db.rollback()
         raise SessionServiceError("Parse failed on first response.", cause=e) from e
 
     if not isinstance(parsed, ParsedTurn):
+        _log_service_error(
+            db,
+            kind="session.start.wrong_response_kind",
+            message=f"Expected ParsedTurn, got {parsed.kind!r}.",
+            session_id=None,
+            context={
+                "transport_kind": transport_kind.value,
+                "topic_path": topic_path,
+                "actual_kind": parsed.kind,
+                "expected_kind": "turn",
+            },
+        )
         db.rollback()
         raise SessionServiceError(
             f"Expected a teaching turn on session start, got {parsed.kind!r}.",
@@ -190,6 +262,13 @@ async def _send_within_chat(
         chat = await transport.resume_chat(metadata)
         response = await transport.send(chat, prompt)
     except TransportError as e:
+        _log_service_error(
+            db,
+            kind="session.send.transport_failed",
+            message=e.message,
+            session_id=session.id,
+            context={"transport_kind": session.transport_kind.value},
+        )
         db.rollback()
         raise SessionServiceError(
             f"Transport failed during send_user_answer: {e.message}", cause=e
@@ -198,6 +277,16 @@ async def _send_within_chat(
     try:
         parsed = parse_response(response.text)
     except Exception as e:
+        _log_service_error(
+            db,
+            kind="session.send.parse_failed",
+            message=str(e),
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "raw_response": response.text,
+            },
+        )
         db.rollback()
         raise SessionServiceError("Parse failed on user-answer response.", cause=e) from e
 
@@ -333,6 +422,13 @@ async def _request_and_parse_handover(
         handover_response = await transport.send(old_chat, build_handover_request())
         await transport.close(old_chat)
     except TransportError as e:
+        _log_service_error(
+            db,
+            kind="session.handover.request_transport_failed",
+            message=e.message,
+            session_id=session.id,
+            context={"transport_kind": session.transport_kind.value},
+        )
         db.rollback()
         raise SessionServiceError(
             f"Transport failed during handover request: {e.message}", cause=e
@@ -341,10 +437,31 @@ async def _request_and_parse_handover(
     try:
         parsed = parse_response(handover_response.text)
     except Exception as e:
+        _log_service_error(
+            db,
+            kind="session.handover.request_parse_failed",
+            message=str(e),
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "raw_response": handover_response.text,
+            },
+        )
         db.rollback()
         raise SessionServiceError("Parse failed on handover response.", cause=e) from e
 
     if not isinstance(parsed, ParsedHandover):
+        _log_service_error(
+            db,
+            kind="session.handover.wrong_response_kind",
+            message=f"Expected ParsedHandover, got {parsed.kind!r}.",
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "actual_kind": parsed.kind,
+                "expected_kind": "handover",
+            },
+        )
         db.rollback()
         raise SessionServiceError(
             f"Expected a handover block from dying chat, got {parsed.kind!r}.",
@@ -376,6 +493,13 @@ async def _open_new_chat_with_handover(
     try:
         new_chat, new_response = await transport.start_new_chat(combined_intro, first_message)
     except TransportError as e:
+        _log_service_error(
+            db,
+            kind="session.handover.new_chat_transport_failed",
+            message=e.message,
+            session_id=session.id,
+            context={"transport_kind": session.transport_kind.value},
+        )
         db.rollback()
         raise SessionServiceError(
             f"Transport failed opening new chat after handover: {e.message}", cause=e
@@ -384,12 +508,33 @@ async def _open_new_chat_with_handover(
     try:
         parsed = parse_response(new_response.text)
     except Exception as e:
+        _log_service_error(
+            db,
+            kind="session.handover.new_chat_parse_failed",
+            message=str(e),
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "raw_response": new_response.text,
+            },
+        )
         db.rollback()
         raise SessionServiceError(
             "Parse failed on new chat's first response after handover.", cause=e
         ) from e
 
     if not isinstance(parsed, ParsedTurn):
+        _log_service_error(
+            db,
+            kind="session.handover.new_chat_wrong_response_kind",
+            message=f"Expected ParsedTurn, got {parsed.kind!r}.",
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "actual_kind": parsed.kind,
+                "expected_kind": "turn",
+            },
+        )
         db.rollback()
         raise SessionServiceError(
             f"Expected a teaching turn after handover, got {parsed.kind!r}.",
