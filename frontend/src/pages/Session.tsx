@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { z } from "zod";
 
+import { SessionEndView } from "@/components/session/session-end-view";
 import { TurnView } from "@/components/session/turn-view";
 import {
     ParsedTurnSchema,
@@ -66,10 +67,9 @@ export function Session(): React.JSX.Element {
         );
     }
 
-    if (parsed.kind !== "turn") {
-        // Handover is treated as unexpected because the
-        // backend transparently handles chat transitions
-        // inside send_user_answer.
+    // Handover is unexpected at the frontend because the backend
+    // handles chat transitions transparently inside send_user_answer.
+    if (parsed.kind === "handover") {
         return (
             <div className="min-h-svh bg-background text-foreground p-8">
                 <p className="text-muted-foreground">
@@ -87,12 +87,16 @@ export function Session(): React.JSX.Element {
                 </p>
             </header>
             <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-8">
-                <TurnView
-                    key={turnIndex}
-                    turn={parsed}
-                    sessionId={id}
-                    onResponse={handleResponse}
-                />
+                {parsed.kind === "turn" ? (
+                    <TurnView
+                        key={turnIndex}
+                        turn={parsed}
+                        sessionId={id}
+                        onResponse={handleResponse}
+                    />
+                ) : (
+                    <SessionEndView parsed={parsed} sessionId={id} />
+                )}
             </main>
         </div>
     );
