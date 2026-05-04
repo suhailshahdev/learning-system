@@ -2,11 +2,11 @@ import { useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { z } from "zod";
 
+import { TurnView } from "@/components/session/turn-view";
 import {
     ParsedTurnSchema,
     SessionResponseSchema,
     type ParsedResponse,
-    type ParsedTurn,
     type SessionResponse,
 } from "@/lib/api";
 
@@ -36,12 +36,21 @@ export function Session(): React.JSX.Element {
     const location = useLocation();
     const initial = resolveState(location.state);
 
-    // Local state seeds from route state.
-    const [parsed] = useState<ParsedResponse | null>(
+    const [parsed, setParsed] = useState<ParsedResponse | null>(
         initial.kind === "loaded" ? initial.parsed : null,
     );
+    // Bumps on every onResponse so TurnView remounts and clears its
+    // internal answer state. Without the key, React reuses the same
+    // instance across prop changes and the previous answer would
+    // persist in the textarea.
+    const [turnIndex, setTurnIndex] = useState(0);
 
-    if (initial.kind === "missing" || parsed === null) {
+    const handleResponse = (next: ParsedResponse): void => {
+        setParsed(next);
+        setTurnIndex((n) => n + 1);
+    };
+
+    if (initial.kind === "missing" || parsed === null || id === undefined) {
         return (
             <div className="min-h-svh bg-background text-foreground p-8">
                 <p className="text-muted-foreground">
@@ -58,6 +67,9 @@ export function Session(): React.JSX.Element {
     }
 
     if (parsed.kind !== "turn") {
+        // Handover is treated as unexpected because the
+        // backend transparently handles chat transitions
+        // inside send_user_answer.
         return (
             <div className="min-h-svh bg-background text-foreground p-8">
                 <p className="text-muted-foreground">
@@ -75,34 +87,13 @@ export function Session(): React.JSX.Element {
                 </p>
             </header>
             <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-8">
-                <ParsedTurnView turn={parsed} />
+                <TurnView
+                    key={turnIndex}
+                    turn={parsed}
+                    sessionId={id}
+                    onResponse={handleResponse}
+                />
             </main>
         </div>
-    );
-}
-
-function ParsedTurnView({ turn }: { turn: ParsedTurn }): React.JSX.Element {
-    return (
-        <article className="flex flex-col gap-4">
-            <header className="flex flex-col gap-1">
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                    {turn.topic_path}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                    {turn.mode} · {turn.difficulty}
-                </p>
-            </header>
-            <div className="text-base leading-relaxed whitespace-pre-wrap">
-                {turn.question}
-            </div>
-            {turn.requirements !== null ? (
-                <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-                        Requirements
-                    </p>
-                    <p>{turn.requirements}</p>
-                </div>
-            ) : null}
-        </article>
     );
 }
