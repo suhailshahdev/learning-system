@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, useLocation, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { z } from "zod";
 
+import { EndSessionButton } from "@/components/session/end-session-button";
 import { SessionEndView } from "@/components/session/session-end-view";
 import { TurnView } from "@/components/session/turn-view";
 import {
@@ -35,8 +36,8 @@ function resolveState(routeState: unknown): ResolvedState {
 export function Session(): React.JSX.Element {
     const { id } = useParams<{ id: string }>();
     const location = useLocation();
+    const navigate = useNavigate();
     const initial = resolveState(location.state);
-
     const [parsed, setParsed] = useState<ParsedResponse | null>(
         initial.kind === "loaded" ? initial.parsed : null,
     );
@@ -79,12 +80,22 @@ export function Session(): React.JSX.Element {
         );
     }
 
+    const handleAbandoned = (): void => {
+        void navigate("/");
+    };
+
     return (
         <div className="min-h-svh bg-background text-foreground">
             <header className="flex items-center justify-between gap-4 p-4">
                 <p className="text-sm text-muted-foreground">
                     Session {id}
                 </p>
+                {parsed.kind === "turn" ? (
+                    <EndSessionButton
+                        sessionId={id}
+                        onAbandoned={handleAbandoned}
+                    />
+                ) : null}
             </header>
             <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-8">
                 {parsed.kind === "turn" ? (
