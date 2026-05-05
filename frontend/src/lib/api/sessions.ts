@@ -30,6 +30,14 @@ export const LearningModeSchema = z.enum([
 ]);
 export type LearningMode = z.infer<typeof LearningModeSchema>;
 
+export const GradingVerdictSchema = z.enum([
+    "correct",
+    "partial",
+    "incorrect",
+    "open_graded",
+]);
+export type GradingVerdict = z.infer<typeof GradingVerdictSchema>;
+
 export const SessionStateSchema = z.enum([
     "in_progress",
     "completed",
@@ -57,6 +65,8 @@ export const ParsedTurnSchema = z.object({
     difficulty: DifficultySchema,
     prerequisites: z.array(PrerequisiteSchema),
     mode: LearningModeSchema,
+    grading_verdict: GradingVerdictSchema.nullable(),
+    grading_explanation: z.string().nullable(),
     question: z.string().min(1),
     expected_answer: z.string().nullable(),
     requirements: z.string().nullable(),
