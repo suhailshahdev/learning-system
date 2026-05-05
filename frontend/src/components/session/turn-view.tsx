@@ -26,9 +26,9 @@ const VERDICT_LABELS: Record<GradingVerdict, string> = {
 };
 
 const VERDICT_STYLES: Record<GradingVerdict, string> = {
-    correct: "bg-secondary text-secondary-foreground",
-    partial: "bg-muted text-foreground",
-    incorrect: "bg-destructive/10 text-destructive",
+    correct: "bg-success/15 text-success",
+    partial: "bg-warning/15 text-warning",
+    incorrect: "bg-destructive/15 text-destructive",
     open_graded: "bg-muted text-muted-foreground",
 };
 
@@ -76,7 +76,6 @@ export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Elem
                 <FeedbackPanel
                     verdict={turn.grading_verdict}
                     explanation={turn.grading_explanation}
-                    expectedAnswer={turn.expected_answer}
                     onContinue={handleContinue}
                 />
             ) : (
@@ -97,14 +96,12 @@ export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Elem
 type FeedbackPanelProps = {
     verdict: GradingVerdict;
     explanation: string | null;
-    expectedAnswer: string | null;
     onContinue: () => void;
 };
 
 function FeedbackPanel({
     verdict,
     explanation,
-    expectedAnswer,
     onContinue,
 }: FeedbackPanelProps): React.JSX.Element {
     return (
@@ -121,17 +118,6 @@ function FeedbackPanel({
                     </p>
                 ) : null}
             </div>
-
-            {expectedAnswer !== null ? (
-                <div className="rounded-md border border-border bg-muted/40 p-3">
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-                        Expected answer
-                    </p>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                        {expectedAnswer}
-                    </p>
-                </div>
-            ) : null}
 
             <Button type="button" onClick={onContinue} className="self-start">
                 Continue
