@@ -14,11 +14,13 @@ def build_turn_prompt(user_answer: str) -> str:
 
     The user_answer is the text the user submitted in the local
     app. The reminder anchors the LLM back to the delimited
-    format in case earlier turns drifted.
+    format in case earlier turns drifted, and reinforces that
+    grading is required on every follow-up turn.
     """
     return f"""\
 {user_answer}
 
-Grade if the mode requires it. Continue with a follow-up or the
-next item. Reply in the delimited format declared in the system
-intro."""
+Grade the user's answer above in GRADING and GRADING_EXPLANATION.
+Then continue with the next teaching turn. Reply in the delimited
+format declared in the system intro.
+"""

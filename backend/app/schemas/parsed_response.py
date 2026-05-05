@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 # that works for both shapes. Same constraint as SQLAlchemy
 # `Mapped[T]` columns (handover D75); ruff's TC002 doesn't account
 # for runtime-introspecting libraries.
-from app.models.enums import Difficulty, LearningMode  # noqa: TC002
+from app.models.enums import Difficulty, GradingVerdict, LearningMode  # noqa: TC002
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -41,11 +41,14 @@ class ParsedTurn(BaseModel):
     """A regular teaching turn.
 
     The wire format has TOPIC, DIFFICULTY, PREREQUISITES, MODE,
-    QUESTION, EXPECTED_ANSWER, REQUIREMENTS, FOLLOWUP, TAGS. Three
-    of those fields can be absent in a meaningful way: EXPECTED_ANSWER
-    can be the literal "OPEN" for free-form modes, and REQUIREMENTS /
-    FOLLOWUP can be the literal "NONE". The parser converts those
-    sentinels to Python None so consumers do not branch on strings.
+    GRADING, GRADING_EXPLANATION, QUESTION, EXPECTED_ANSWER,
+    REQUIREMENTS, FOLLOWUP, TAGS. Five of those fields can be
+    absent in a meaningful way: GRADING and GRADING_EXPLANATION
+    are NONE on the first turn of a session (no previous answer
+    exists yet). EXPECTED_ANSWER can be the literal "OPEN" for
+    free-form modes. REQUIREMENTS and FOLLOWUP can be the literal
+    "NONE". The parser converts all sentinels to Python None so
+    consumers do not branch on strings.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -55,6 +58,8 @@ class ParsedTurn(BaseModel):
     difficulty: Difficulty
     prerequisites: list[Prerequisite] = Field(default_factory=list)
     mode: LearningMode
+    grading_verdict: GradingVerdict | None = None
+    grading_explanation: str | None = None
     question: str = Field(min_length=1)
     expected_answer: str | None = None
     requirements: str | None = None

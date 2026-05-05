@@ -10,7 +10,7 @@ match what the parser expects. Tests catch silent drift between
 from __future__ import annotations
 
 import pytest
-from app.models.enums import Difficulty, LearningMode
+from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.prompts.intro import build_intro
 
 
@@ -29,10 +29,15 @@ class TestIntroContent:
         for diff in Difficulty:
             assert diff.value in intro, f"{diff.value!r} missing from intro"
 
+    def test_every_grading_verdict_appears(self, intro: str) -> None:
+        for verdict in GradingVerdict:
+            assert verdict.value in intro, f"{verdict.value!r} missing from intro"
+
     def test_required_section_headers_present(self, intro: str) -> None:
         for header in (
             "OUTPUT FORMAT",
             "LEARNING MODES",
+            "GRADING VERDICTS",
             "DIFFICULTY VALUES",
             "RULES",
         ):
@@ -44,6 +49,8 @@ class TestIntroContent:
             "---DIFFICULTY---",
             "---PREREQUISITES---",
             "---MODE---",
+            "---GRADING---",
+            "---GRADING_EXPLANATION---",
             "---QUESTION---",
             "---EXPECTED_ANSWER---",
             "---REQUIREMENTS---",

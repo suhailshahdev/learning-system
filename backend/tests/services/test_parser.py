@@ -9,11 +9,13 @@ mode (error path).
 from __future__ import annotations
 
 import pytest
-from app.models.enums import Difficulty, LearningMode
+from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.parsed_response import ParsedHandover, ParsedSessionEnd, ParsedTurn
 from app.services.parser import ParseError, parse_response
 
-# Happy-path turn with all fields populated meaningfully.
+# Happy-path turn with all fields populated meaningfully. Represents
+# a mid-session follow-up turn (grading present, real verdict and
+# explanation).
 TURN_FULL = """\
 ---TOPIC---
 Python > Data Types > Integers
@@ -23,6 +25,10 @@ beginner
 Python > Basics:beginner, Python > Variables:beginner
 ---MODE---
 flashcard
+---GRADING---
+correct
+---GRADING_EXPLANATION---
+Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.
 ---QUESTION---
 What is the result of 7 // 2 in Python 3?
 ---EXPECTED_ANSWER---
@@ -36,7 +42,9 @@ arithmetic, integers
 ---END---
 """
 
-# Happy-path turn with all sentinels in play.
+# Happy-path turn with all sentinels in play. Represents the first
+# turn of a session: grading is NONE (no previous answer), expected
+# answer is OPEN, requirements and followup are NONE.
 TURN_SENTINELS = """\
 ---TOPIC---
 Python > Concepts > Decorators
@@ -46,6 +54,10 @@ intermediate
 NONE
 ---MODE---
 socratic
+---GRADING---
+NONE
+---GRADING_EXPLANATION---
+NONE
 ---QUESTION---
 Walk me through what a decorator does conceptually.
 ---EXPECTED_ANSWER---
@@ -87,6 +99,9 @@ class TestParseTurn:
         assert result.topic_path == "Python > Data Types > Integers"
         assert result.difficulty == Difficulty.BEGINNER
         assert result.mode == LearningMode.FLASHCARD
+        assert result.grading_verdict == GradingVerdict.CORRECT
+        assert result.grading_explanation is not None
+        assert "Floor division" in result.grading_explanation
         assert result.question == "What is the result of 7 // 2 in Python 3?"
         assert result.expected_answer == "3"
         assert result.requirements == "Python 3.12+"
@@ -100,6 +115,8 @@ class TestParseTurn:
         result = parse_response(TURN_SENTINELS)
         assert isinstance(result, ParsedTurn)
         assert result.prerequisites == []
+        assert result.grading_verdict is None
+        assert result.grading_explanation is None
         assert result.expected_answer is None
         assert result.requirements is None
         assert result.followup is None
@@ -158,6 +175,22 @@ class TestParseErrors:
     def test_invalid_mode_raises(self) -> None:
         text = TURN_FULL.replace("flashcard", "telepathy")
         with pytest.raises(ParseError, match="Invalid MODE"):
+            parse_response(text)
+
+    def test_invalid_grading_verdict_raises(self) -> None:
+        text = TURN_FULL.replace("---GRADING---\ncorrect", "---GRADING---\nbrilliant")
+        with pytest.raises(ParseError, match="Invalid GRADING"):
+            parse_response(text)
+
+    def test_grading_field_missing_raises(self) -> None:
+        # Drop both grading blocks entirely - the parser should detect
+        # the missing fields rather than silently allowing the older format.
+        text = TURN_FULL.replace(
+            "---GRADING---\ncorrect\n---GRADING_EXPLANATION---\n"
+            "Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.\n",
+            "",
+        )
+        with pytest.raises(ParseError):
             parse_response(text)
 
     def test_malformed_prerequisite_raises(self) -> None:

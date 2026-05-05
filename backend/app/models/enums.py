@@ -101,6 +101,23 @@ class LearningMode(StrEnum):
     SOCRATIC = "socratic"
 
 
+class GradingVerdict(StrEnum):
+    """Verdict on a user's previous answer. Used by `parsed_response.ParsedTurn.grading_verdict`.
+
+    The LLM emits a verdict on each turn that has a previous answer
+    to grade. The first turn of a session has no previous answer,
+    so the field is None on first turns. open_graded covers modes
+    where the answer is free-form prose (explain_back, socratic);
+    the verdict is informational and the explanation carries the
+    teaching feedback.
+    """
+
+    CORRECT = "correct"
+    PARTIAL = "partial"
+    INCORRECT = "incorrect"
+    OPEN_GRADED = "open_graded"
+
+
 class TransportKind(StrEnum):
     """Which LLM transport opened a chat. Used by `session.transport_kind`.
 

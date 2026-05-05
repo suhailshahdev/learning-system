@@ -23,7 +23,7 @@ import re
 
 from pydantic import ValidationError
 
-from app.models.enums import Difficulty, LearningMode
+from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.parsed_response import (
     ParsedHandover,
     ParsedResponse,
@@ -48,6 +48,8 @@ TURN_FIELDS = (
     "DIFFICULTY",
     "PREREQUISITES",
     "MODE",
+    "GRADING",
+    "GRADING_EXPLANATION",
     "QUESTION",
     "EXPECTED_ANSWER",
     "REQUIREMENTS",
@@ -139,6 +141,8 @@ def _parse_turn(blocks: list[tuple[str, str]], raw: str) -> ParsedTurn:
         "difficulty": _parse_enum(fields["DIFFICULTY"], Difficulty, "DIFFICULTY", raw),
         "prerequisites": _parse_prerequisites(fields["PREREQUISITES"], raw),
         "mode": _parse_enum(fields["MODE"], LearningMode, "MODE", raw),
+        "grading_verdict": _parse_grading_verdict(fields["GRADING"], raw),
+        "grading_explanation": _none_if_sentinel(fields["GRADING_EXPLANATION"], SENTINEL_NONE),
         "question": fields["QUESTION"],
         "expected_answer": _none_if_sentinel(fields["EXPECTED_ANSWER"], SENTINEL_OPEN),
         "requirements": _none_if_sentinel(fields["REQUIREMENTS"], SENTINEL_NONE),
@@ -239,7 +243,7 @@ def _collect_fields(
     return out
 
 
-def _parse_enum[E: (Difficulty, LearningMode)](
+def _parse_enum[E: (Difficulty, LearningMode, GradingVerdict)](
     value: str, enum_cls: type[E], field_name: str, raw: str
 ) -> E:
     """Coerce a string to an enum member, raising ParseError on miss."""
@@ -252,6 +256,14 @@ def _parse_enum[E: (Difficulty, LearningMode)](
             raw_response=raw,
             cause=e,
         ) from e
+
+
+def _parse_grading_verdict(value: str, raw: str) -> GradingVerdict | None:
+    """Parse the GRADING field. Returns None for the NONE sentinel."""
+    stripped = value.strip()
+    if stripped == SENTINEL_NONE or not stripped:
+        return None
+    return _parse_enum(value, GradingVerdict, "GRADING", raw)
 
 
 def _parse_prerequisites(value: str, raw: str) -> list[Prerequisite]:
