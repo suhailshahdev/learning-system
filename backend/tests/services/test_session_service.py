@@ -55,6 +55,10 @@ beginner
 NONE
 ---MODE---
 flashcard
+---GRADING---
+NONE
+---GRADING_EXPLANATION---
+NONE
 ---QUESTION---
 What is the result of 7 // 2 in Python 3?
 ---EXPECTED_ANSWER---
@@ -85,6 +89,10 @@ intermediate
 Python > Basics:beginner, HTTP & APIs > Methods:beginner
 ---MODE---
 flashcard
+---GRADING---
+NONE
+---GRADING_EXPLANATION---
+NONE
 ---QUESTION---
 What does the type annotation in a path parameter do?
 ---EXPECTED_ANSWER---
@@ -376,6 +384,10 @@ beginner
 NONE
 ---MODE---
 type_the_answer
+---GRADING---
+correct
+---GRADING_EXPLANATION---
+Right. Floor division on positive integers truncates toward zero.
 ---QUESTION---
 What is 10 % 3 in Python?
 ---EXPECTED_ANSWER---
@@ -526,6 +538,10 @@ intermediate
 NONE
 ---MODE---
 explain_back
+---GRADING---
+NONE
+---GRADING_EXPLANATION---
+NONE
 ---QUESTION---
 Explain in your own words how Python integers handle arbitrary precision.
 ---EXPECTED_ANSWER---
