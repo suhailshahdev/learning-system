@@ -34,6 +34,26 @@ const VERDICT_STYLES: Record<GradingVerdict, string> = {
     open_graded: "bg-muted text-muted-foreground",
 };
 
+// Splits text on backtick-wrapped segments and renders each match
+// as inline code. Plain text parts return as raw strings and React
+// flattens the array in JSX. Limited to inline code by design.
+// Bullets, bold, and other markdown features stay as raw text.
+function renderText(text: string): React.ReactNode {
+    const parts = text.split(/(`[^`]+`)/g);
+    return parts.map((part, i) =>
+        part.startsWith("`") && part.endsWith("`") && part.length >= 2 ? (
+            <code
+                key={i}
+                className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
+            >
+                {part.slice(1, -1)}
+            </code>
+        ) : (
+            part
+        ),
+    );
+}
+
 export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Element {
     // First turns have no grading since there is no previous answer.
     // Subsequent turns show feedback first and advance to the question
@@ -119,7 +139,7 @@ function FeedbackPanel({
                 </span>
                 {explanation !== null ? (
                     <p className="text-base leading-relaxed whitespace-pre-wrap">
-                        {explanation}
+                        {renderText(explanation)}
                     </p>
                 ) : null}
             </div>
@@ -157,7 +177,7 @@ function AnsweringPanel({
     return (
         <>
             <div className="text-base leading-relaxed whitespace-pre-wrap">
-                {turn.question}
+                {renderText(turn.question)}
             </div>
             {turn.question_code !== null ? (
                 <CodeBlockView block={turn.question_code} />

@@ -165,9 +165,13 @@ RULES
   of a _CODE block is the language tag (e.g. python, typescript,
   bash); the remaining lines are the code body. Keep prose in prose
   and code in code blocks.
-- Inline code in prose (variable names, short expressions like `s[0]`
-  or `len(x)`) uses backticks and stays in QUESTION or
-  GRADING_EXPLANATION. Only block-level code uses the _CODE fields.
+- Always wrap inline code references in backticks: variable names,
+  function names, short expressions, literal values. Examples:
+  `s[0]`, `len(x)`, `True`, `range(3)`. The frontend renders
+  backticked content with monospace font and a subtle background
+  so it stands out from prose. Use backticks for any code-shaped
+  reference in QUESTION or GRADING_EXPLANATION; only block-level
+  code uses the _CODE fields.
 - Use OPEN for EXPECTED_ANSWER when the answer is graded
   conversationally.
 - Use NONE for REQUIREMENTS, FOLLOWUP, PREREQUISITES, QUESTION_CODE,
