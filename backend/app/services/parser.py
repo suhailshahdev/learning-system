@@ -25,6 +25,7 @@ from pydantic import ValidationError
 
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.parsed_response import (
+    CodeBlock,
     ParsedHandover,
     ParsedResponse,
     ParsedSessionEnd,
@@ -50,7 +51,9 @@ TURN_FIELDS = (
     "MODE",
     "GRADING",
     "GRADING_EXPLANATION",
+    "GRADING_EXPLANATION_CODE",
     "QUESTION",
+    "QUESTION_CODE",
     "EXPECTED_ANSWER",
     "REQUIREMENTS",
     "FOLLOWUP",
@@ -70,6 +73,10 @@ HANDOVER_KEYS = (
 # end marker. This is the minimum block count for SESSION_END_PROPOSAL
 # and HANDOVER, both of which have one body block plus a closing marker.
 MIN_BLOCKS_WITH_END_MARKER = 2
+
+# A valid code block has a language tag on the first line and a code
+# body on subsequent lines: minimum two lines after the field is split.
+MIN_CODE_BLOCK_LINES = 2
 
 
 class ParseError(Exception):
@@ -143,7 +150,11 @@ def _parse_turn(blocks: list[tuple[str, str]], raw: str) -> ParsedTurn:
         "mode": _parse_enum(fields["MODE"], LearningMode, "MODE", raw),
         "grading_verdict": _parse_grading_verdict(fields["GRADING"], raw),
         "grading_explanation": _none_if_sentinel(fields["GRADING_EXPLANATION"], SENTINEL_NONE),
+        "grading_explanation_code": _parse_code_block(
+            fields["GRADING_EXPLANATION_CODE"], "GRADING_EXPLANATION_CODE", raw
+        ),
         "question": fields["QUESTION"],
+        "question_code": _parse_code_block(fields["QUESTION_CODE"], "QUESTION_CODE", raw),
         "expected_answer": _none_if_sentinel(fields["EXPECTED_ANSWER"], SENTINEL_OPEN),
         "requirements": _none_if_sentinel(fields["REQUIREMENTS"], SENTINEL_NONE),
         "followup": _none_if_sentinel(fields["FOLLOWUP"], SENTINEL_NONE),
@@ -264,6 +275,41 @@ def _parse_grading_verdict(value: str, raw: str) -> GradingVerdict | None:
     if stripped == SENTINEL_NONE or not stripped:
         return None
     return _parse_enum(value, GradingVerdict, "GRADING", raw)
+
+
+def _parse_code_block(value: str, field_name: str, raw: str) -> CodeBlock | None:
+    """Parse a code-block field. Returns None for the NONE sentinel.
+
+    The wire format puts the language tag on the first line and the
+    code body on the lines that follow. Both must be non-empty. A
+    field that is just NONE means no code block. A language without
+    a body or a body without a language is a parse error.
+    """
+    stripped = value.strip()
+    if stripped == SENTINEL_NONE or not stripped:
+        return None
+
+    lines = value.split("\n", 1)
+    if len(lines) < MIN_CODE_BLOCK_LINES:
+        raise ParseError(
+            f"{field_name} must have a language tag on the first line "
+            f"and a code body on subsequent lines.",
+            raw_response=raw,
+        )
+
+    language = lines[0].strip()
+    body = lines[1].strip()
+    if not language:
+        raise ParseError(f"{field_name} missing language tag.", raw_response=raw)
+    if not body:
+        raise ParseError(f"{field_name} missing code body.", raw_response=raw)
+
+    try:
+        return CodeBlock(language=language, body=body)
+    except ValidationError as e:
+        raise ParseError(
+            f"{field_name} failed schema validation.", raw_response=raw, cause=e
+        ) from e
 
 
 def _parse_prerequisites(value: str, raw: str) -> list[Prerequisite]:

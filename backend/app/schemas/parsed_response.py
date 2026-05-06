@@ -11,13 +11,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-# Pydantic v2 stores field types as ForwardRef when only available
-# under TYPE_CHECKING; bare references happen to resolve through
-# late-binding lookup, but generic-wrapped types (e.g. list[Difficulty])
-# fail with PydanticUserError. Runtime import is the only pattern
-# that works for both shapes. Same constraint as SQLAlchemy
-# `Mapped[T]` columns (handover D75); ruff's TC002 doesn't account
-# for runtime-introspecting libraries.
+# Pydantic v2 fails to resolve generic types like list[Difficulty]
+# when the import is TYPE_CHECKING-only. A runtime import is the
+# only pattern that works for both plain and generic-wrapped types.
+# Same constraint as SQLAlchemy Mapped columns. ruff's TC002 does
+# not account for runtime-introspecting libraries.
 from app.models.enums import Difficulty, GradingVerdict, LearningMode  # noqa: TC002
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,18 +35,38 @@ class Prerequisite(BaseModel):
     min_difficulty: Difficulty
 
 
+class CodeBlock(BaseModel):
+    """A code block embedded in a teaching turn.
+
+    The wire format puts the language tag on the first line and the
+    code body on the lines that follow. Both pieces are required but
+    the field as a whole is optional via the NONE sentinel.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    language: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+
+
 class ParsedTurn(BaseModel):
     """A regular teaching turn.
 
-    The wire format has TOPIC, DIFFICULTY, PREREQUISITES, MODE,
-    GRADING, GRADING_EXPLANATION, QUESTION, EXPECTED_ANSWER,
-    REQUIREMENTS, FOLLOWUP, TAGS. Five of those fields can be
-    absent in a meaningful way: GRADING and GRADING_EXPLANATION
-    are NONE on the first turn of a session (no previous answer
-    exists yet). EXPECTED_ANSWER can be the literal "OPEN" for
-    free-form modes. REQUIREMENTS and FOLLOWUP can be the literal
-    "NONE". The parser converts all sentinels to Python None so
-    consumers do not branch on strings.
+    The wire format includes TOPIC, DIFFICULTY, PREREQUISITES, MODE,
+    GRADING, GRADING_EXPLANATION, GRADING_EXPLANATION_CODE, QUESTION,
+    QUESTION_CODE, EXPECTED_ANSWER, REQUIREMENTS, FOLLOWUP, and TAGS.
+
+    Several fields use sentinels for absence. GRADING and
+    GRADING_EXPLANATION are NONE on the first turn since there is no
+    previous answer. EXPECTED_ANSWER can be OPEN for free-form modes.
+    REQUIREMENTS, FOLLOWUP, and the two CODE fields can be NONE. The
+    parser converts all sentinels to None so consumers never branch
+    on strings.
+
+    Code blocks are split out of the prose fields so the frontend can
+    render them with a monospace font and language label. Inline code
+    stays in the prose with backticks and only block-level code uses
+    the CODE fields.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -60,7 +78,9 @@ class ParsedTurn(BaseModel):
     mode: LearningMode
     grading_verdict: GradingVerdict | None = None
     grading_explanation: str | None = None
+    grading_explanation_code: CodeBlock | None = None
     question: str = Field(min_length=1)
+    question_code: CodeBlock | None = None
     expected_answer: str | None = None
     requirements: str | None = None
     followup: str | None = None
@@ -70,9 +90,9 @@ class ParsedTurn(BaseModel):
 class ParsedSessionEnd(BaseModel):
     """The LLM proposed the session is complete.
 
-    User confirms via the approve button to mark items learned;
-    user can also keep going if they disagree. The summary is the
-    one-line text the LLM emits between SESSION_END_PROPOSAL and END.
+    The user can approve to mark items as learned or keep going if
+    they disagree. The summary is the one line of text the LLM emits
+    between SESSION_END_PROPOSAL and END.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -84,9 +104,9 @@ class ParsedSessionEnd(BaseModel):
 class ParsedHandover(BaseModel):
     """Handover block emitted when a chat hits the message-count threshold.
 
-    The session engine pastes this into the next chat as part of
-    its intro. The fields are kept as raw strings because the next
-    chat is the only consumer; further structuring would have no use.
+    The session engine pastes this into the next chat as part of its
+    intro. Fields are kept as raw strings since the next chat is the
+    only consumer and further structuring would have no use.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -101,9 +121,9 @@ class ParsedHandover(BaseModel):
 
 
 # Discriminated union over the three response shapes. Pydantic
-# narrows on the `kind` field; mypy follows along on match-case
-# blocks. Use this as the parser's return type so consumers can
-# pattern-match exhaustively.
+# narrows on the kind field and mypy follows in match-case blocks.
+# Use this as the parser return type so consumers can pattern-match
+# exhaustively.
 type ParsedResponse = Annotated[
     ParsedTurn | ParsedSessionEnd | ParsedHandover,
     Field(discriminator="kind"),

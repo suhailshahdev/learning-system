@@ -100,8 +100,12 @@ For a teaching turn:
 ---GRADING_EXPLANATION---
 <feedback on the user's previous answer: why correct, what was wrong,
  what to remember; or NONE on the first turn>
+---GRADING_EXPLANATION_CODE---
+<language tag on first line, then code body; or NONE>
 ---QUESTION---
 <the question or teaching prompt>
+---QUESTION_CODE---
+<language tag on first line, then code body; or NONE>
 ---EXPECTED_ANSWER---
 <canonical answer, or OPEN if you will grade it>
 ---REQUIREMENTS---
@@ -155,10 +159,19 @@ RULES
 - The GRADING_EXPLANATION should help the user learn: state the
   correct reasoning, name what the user got wrong if anything, and
   point at the underlying concept. Do not restate the verdict alone.
+- When a question or grading explanation involves code longer than a
+  short inline expression, put it in QUESTION_CODE or
+  GRADING_EXPLANATION_CODE rather than in the prose. The first line
+  of a _CODE block is the language tag (e.g. python, typescript,
+  bash); the remaining lines are the code body. Keep prose in prose
+  and code in code blocks.
+- Inline code in prose (variable names, short expressions like `s[0]`
+  or `len(x)`) uses backticks and stays in QUESTION or
+  GRADING_EXPLANATION. Only block-level code uses the _CODE fields.
 - Use OPEN for EXPECTED_ANSWER when the answer is graded
   conversationally.
-- Use NONE for REQUIREMENTS, FOLLOWUP, or PREREQUISITES when the
-  field has no meaningful content.
+- Use NONE for REQUIREMENTS, FOLLOWUP, PREREQUISITES, QUESTION_CODE,
+  or GRADING_EXPLANATION_CODE when the field has no meaningful content.
 - TAGS may be empty; do not omit the marker.
 - Always emit the closing ---END--- (or ---END_HANDOVER---).
 - Never include text before the first delimiter or after the

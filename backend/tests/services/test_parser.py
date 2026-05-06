@@ -29,8 +29,12 @@ flashcard
 correct
 ---GRADING_EXPLANATION---
 Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 What is the result of 7 // 2 in Python 3?
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 3
 ---REQUIREMENTS---
@@ -58,8 +62,12 @@ socratic
 NONE
 ---GRADING_EXPLANATION---
 NONE
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 Walk me through what a decorator does conceptually.
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 OPEN
 ---REQUIREMENTS---
@@ -70,6 +78,49 @@ NONE
 
 ---END---
 """
+
+# Happy-path turn with code blocks in QUESTION and GRADING_EXPLANATION.
+# Represents the "show me the output of this code" pattern that hits
+# every code-bearing question in real sessions.
+TURN_WITH_CODE = """\
+---TOPIC---
+Python > Control Flow > For Loops
+---DIFFICULTY---
+beginner
+---PREREQUISITES---
+NONE
+---MODE---
+type_the_answer
+---GRADING---
+partial
+---GRADING_EXPLANATION---
+Close, but the loop body multiplies by 2, not adds 2. Trace it again
+with i = 0, 1, 2.
+---GRADING_EXPLANATION_CODE---
+python
+# What the loop actually does, step by step:
+print(0 * 2)  # 0
+print(1 * 2)  # 2
+print(2 * 2)  # 4
+---QUESTION---
+What does this script print? One number per line.
+---QUESTION_CODE---
+python
+for i in range(3):
+    print(i * 2)
+---EXPECTED_ANSWER---
+0
+2
+4
+---REQUIREMENTS---
+NONE
+---FOLLOWUP---
+NONE
+---TAGS---
+python, loops, range
+---END---
+"""
+
 
 # A session-end proposal.
 SESSION_END = """\
@@ -117,10 +168,31 @@ class TestParseTurn:
         assert result.prerequisites == []
         assert result.grading_verdict is None
         assert result.grading_explanation is None
+        assert result.grading_explanation_code is None
         assert result.expected_answer is None
         assert result.requirements is None
         assert result.followup is None
+        assert result.question_code is None
         assert result.tags == []
+
+    def test_code_blocks_parse_into_code_block_models(self) -> None:
+        result = parse_response(TURN_WITH_CODE)
+        assert isinstance(result, ParsedTurn)
+
+        assert result.question_code is not None
+        assert result.question_code.language == "python"
+        assert result.question_code.body == "for i in range(3):\n    print(i * 2)"
+
+        assert result.grading_explanation_code is not None
+        assert result.grading_explanation_code.language == "python"
+        assert "print(0 * 2)" in result.grading_explanation_code.body
+
+    def test_code_block_with_none_sentinel_becomes_none(self) -> None:
+        # TURN_FULL has both code blocks set to NONE.
+        result = parse_response(TURN_FULL)
+        assert isinstance(result, ParsedTurn)
+        assert result.question_code is None
+        assert result.grading_explanation_code is None
 
 
 class TestParseSessionEnd:
@@ -191,6 +263,24 @@ class TestParseErrors:
             "",
         )
         with pytest.raises(ParseError):
+            parse_response(text)
+
+    def test_code_block_missing_body_raises(self) -> None:
+        # Language tag on first line, no body after.
+        text = TURN_WITH_CODE.replace(
+            "---QUESTION_CODE---\npython\nfor i in range(3):\n    print(i * 2)\n",
+            "---QUESTION_CODE---\npython\n",
+        )
+        with pytest.raises(ParseError, match="QUESTION_CODE"):
+            parse_response(text)
+
+    def test_code_block_missing_language_raises(self) -> None:
+        # Empty first line, body on second line.
+        text = TURN_WITH_CODE.replace(
+            "---QUESTION_CODE---\npython\nfor i in range(3):\n    print(i * 2)\n",
+            "---QUESTION_CODE---\n\nfor i in range(3):\n",
+        )
+        with pytest.raises(ParseError, match="QUESTION_CODE"):
             parse_response(text)
 
     def test_malformed_prerequisite_raises(self) -> None:

@@ -59,8 +59,12 @@ flashcard
 NONE
 ---GRADING_EXPLANATION---
 NONE
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 What is the result of 7 // 2 in Python 3?
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 3
 ---REQUIREMENTS---
@@ -93,8 +97,12 @@ flashcard
 NONE
 ---GRADING_EXPLANATION---
 NONE
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 What does the type annotation in a path parameter do?
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 It tells FastAPI to convert and validate the value at request time.
 ---REQUIREMENTS---
@@ -388,8 +396,12 @@ type_the_answer
 correct
 ---GRADING_EXPLANATION---
 Right. Floor division on positive integers truncates toward zero.
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 What is 10 % 3 in Python?
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 1
 ---REQUIREMENTS---
@@ -542,8 +554,12 @@ explain_back
 NONE
 ---GRADING_EXPLANATION---
 NONE
+---GRADING_EXPLANATION_CODE---
+NONE
 ---QUESTION---
 Explain in your own words how Python integers handle arbitrary precision.
+---QUESTION_CODE---
+NONE
 ---EXPECTED_ANSWER---
 OPEN
 ---REQUIREMENTS---
