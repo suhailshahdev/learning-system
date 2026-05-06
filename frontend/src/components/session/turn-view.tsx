@@ -1,9 +1,11 @@
 import { useState } from "react";
 
+import { CodeBlockView } from "@/components/session/code-block-view";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+    type CodeBlock,
     type GradingVerdict,
     type ParsedResponse,
     type ParsedTurn,
@@ -76,6 +78,7 @@ export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Elem
                 <FeedbackPanel
                     verdict={turn.grading_verdict}
                     explanation={turn.grading_explanation}
+                    explanationCode={turn.grading_explanation_code}
                     onContinue={handleContinue}
                 />
             ) : (
@@ -96,12 +99,14 @@ export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Elem
 type FeedbackPanelProps = {
     verdict: GradingVerdict;
     explanation: string | null;
+    explanationCode: CodeBlock | null;
     onContinue: () => void;
 };
 
 function FeedbackPanel({
     verdict,
     explanation,
+    explanationCode,
     onContinue,
 }: FeedbackPanelProps): React.JSX.Element {
     return (
@@ -113,11 +118,15 @@ function FeedbackPanel({
                     {VERDICT_LABELS[verdict]}
                 </span>
                 {explanation !== null ? (
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                    <p className="text-base leading-relaxed whitespace-pre-wrap">
                         {explanation}
                     </p>
                 ) : null}
             </div>
+
+            {explanationCode !== null ? (
+                <CodeBlockView block={explanationCode} />
+            ) : null}
 
             <Button type="button" onClick={onContinue} className="self-start">
                 Continue
@@ -150,6 +159,9 @@ function AnsweringPanel({
             <div className="text-base leading-relaxed whitespace-pre-wrap">
                 {turn.question}
             </div>
+            {turn.question_code !== null ? (
+                <CodeBlockView block={turn.question_code} />
+            ) : null}
             {turn.requirements !== null ? (
                 <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
                     <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">

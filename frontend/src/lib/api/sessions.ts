@@ -59,6 +59,12 @@ export const PrerequisiteSchema = z.object({
 });
 export type Prerequisite = z.infer<typeof PrerequisiteSchema>;
 
+export const CodeBlockSchema = z.object({
+    language: z.string().min(1),
+    body: z.string().min(1),
+});
+export type CodeBlock = z.infer<typeof CodeBlockSchema>;
+
 export const ParsedTurnSchema = z.object({
     kind: z.literal("turn"),
     topic_path: z.string().min(1),
@@ -67,7 +73,9 @@ export const ParsedTurnSchema = z.object({
     mode: LearningModeSchema,
     grading_verdict: GradingVerdictSchema.nullable(),
     grading_explanation: z.string().nullable(),
+    grading_explanation_code: CodeBlockSchema.nullable(),
     question: z.string().min(1),
+    question_code: CodeBlockSchema.nullable(),
     expected_answer: z.string().nullable(),
     requirements: z.string().nullable(),
     followup: z.string().nullable(),
