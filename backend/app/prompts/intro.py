@@ -101,11 +101,16 @@ For a teaching turn:
 <feedback on the user's previous answer: why correct, what was wrong,
  what to remember; or NONE on the first turn>
 ---GRADING_EXPLANATION_CODE---
-<language tag on first line, then code body; or NONE>
+<language tag on first line, then code body; or NONE.
+ For code embedded mid-prose, use [LCODE language=X]...[/LCODE]
+ inside the GRADING_EXPLANATION block instead.>
 ---QUESTION---
-<the question or teaching prompt>
+<the question or teaching prompt; may contain
+ [LCODE language=X]...[/LCODE] markers for embedded code>
 ---QUESTION_CODE---
-<language tag on first line, then code body; or NONE>
+<language tag on first line, then code body; or NONE.
+ For code embedded mid-prose, use [LCODE language=X]...[/LCODE]
+ inside the QUESTION block instead.>
 ---EXPECTED_ANSWER---
 <canonical answer, or OPEN if you will grade it>
 ---REQUIREMENTS---
@@ -159,19 +164,17 @@ RULES
 - The GRADING_EXPLANATION should help the user learn: state the
   correct reasoning, name what the user got wrong if anything, and
   point at the underlying concept. Do not restate the verdict alone.
-- When a question or grading explanation involves code longer than a
-  short inline expression, put it in QUESTION_CODE or
-  GRADING_EXPLANATION_CODE rather than in the prose. The first line
-  of a _CODE block is the language tag (e.g. python, typescript,
-  bash); the remaining lines are the code body. Keep prose in prose
-  and code in code blocks.
-- Always wrap inline code references in backticks: variable names,
-  function names, short expressions, literal values. Examples:
-  `s[0]`, `len(x)`, `True`, `range(3)`. The frontend renders
-  backticked content with monospace font and a subtle background
-  so it stands out from prose. Use backticks for any code-shaped
-  reference in QUESTION or GRADING_EXPLANATION; only block-level
-  code uses the _CODE fields.
+- For code in QUESTION or GRADING_EXPLANATION, use one of three mechanisms:
+  1. _CODE block (---QUESTION_CODE--- / ---GRADING_EXPLANATION_CODE---) when
+     code is the primary subject. First line is the language tag; remaining
+     lines are the body. One block per _CODE field.
+  2. Inline [LCODE language=X]...[/LCODE] when prose embeds code mid-thought.
+     Single line for short expressions like [LCODE language=python]s[0][/LCODE];
+     multi-line for blocks within prose. Language attribute required, no quotes.
+  3. Backticks (`x`) for bare identifiers only (variable, parameter, or function
+     names with no expression). Use sparingly; prefer [LCODE] for real expressions.
+- Use _CODE for the central piece of code; use [LCODE] for inline references
+  around it. Both can appear in the same turn. Both always require language=X.
 - Use OPEN for EXPECTED_ANSWER when the answer is graded
   conversationally.
 - Use NONE for REQUIREMENTS, FOLLOWUP, PREREQUISITES, QUESTION_CODE,

@@ -34,24 +34,53 @@ const VERDICT_STYLES: Record<GradingVerdict, string> = {
     open_graded: "bg-muted text-muted-foreground",
 };
 
-// Splits text on backtick-wrapped segments and renders each match
-// as inline code. Plain text parts return as raw strings and React
-// flattens the array in JSX. Limited to inline code by design.
-// Bullets, bold, and other markdown features stay as raw text.
+// Splits text on three markers and renders each match appropriately:
+//
+//   1. [LCODE language=X]...[/LCODE] with newlines in body -> CodeBlockView
+//   2. [LCODE language=X]...[/LCODE] without newlines -> inline <code>
+//   3. `x` -> inline <code>
+//
+// Plain text parts return as raw strings. React flattens the array in JSX.
+// Block-level [LCODE] segments break the line via natural document flow
+// because <CodeBlockView> is a block-level element.
+const LCODE_PATTERN = /\[LCODE language=([^\]]+)\]([\s\S]*?)\[\/LCODE\]/;
+const SPLIT_PATTERN = /(\[LCODE language=[^\]]+\][\s\S]*?\[\/LCODE\]|`[^`]+`)/g;
+
 function renderText(text: string): React.ReactNode {
-    const parts = text.split(/(`[^`]+`)/g);
-    return parts.map((part, i) =>
-        part.startsWith("`") && part.endsWith("`") && part.length >= 2 ? (
-            <code
-                key={i}
-                className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
-            >
-                {part.slice(1, -1)}
-            </code>
-        ) : (
-            part
-        ),
-    );
+    const parts = text.split(SPLIT_PATTERN);
+    return parts.map((part, i) => {
+        const lcodeMatch = LCODE_PATTERN.exec(part);
+        if (lcodeMatch) {
+            const [, rawLanguage, rawBody] = lcodeMatch;
+            if (rawLanguage === undefined || rawBody === undefined) {
+                return part;
+            }
+            const language = rawLanguage.trim();
+            const body = rawBody.replace(/^\n+|\n+$/g, "");
+            if (body.includes("\n")) {
+                return <CodeBlockView key={i} block={{ language, body }} />;
+            }
+            return (
+                <code
+                    key={i}
+                    className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
+                >
+                    {body}
+                </code>
+            );
+        }
+        if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+            return (
+                <code
+                    key={i}
+                    className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
+                >
+                    {part.slice(1, -1)}
+                </code>
+            );
+        }
+        return part;
+    });
 }
 
 export function TurnView({ turn, sessionId, onResponse }: Props): React.JSX.Element {
