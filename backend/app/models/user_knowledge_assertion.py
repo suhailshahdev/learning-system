@@ -47,6 +47,6 @@ class UserKnowledgeAssertion(Base, UUIDPrimaryKey, Timestamps):
         return (
             f"<UserKnowledgeAssertion "
             f"topic_path={self.topic_path!r} "
-            f"difficulty={self.difficulty.value!r}"
+            f"difficulty={self.difficulty.value!r} "
             f"source={self.source.value!r}>"
         )
