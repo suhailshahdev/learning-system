@@ -168,8 +168,26 @@ async def test_continue_last_picks_most_recent_in_progress(db: DbSession) -> Non
 
     assert response.continue_last is not None
     assert response.continue_last.id == newer_in_progress.id
+    assert response.continue_last.topic_path == "Python > Data Types > Integers"
     # Sanity check: not the older in-progress one and not the newer completed one
     assert response.continue_last.id != older_in_progress.id
+
+
+async def test_continue_last_outer_joins_null_topic(db: DbSession) -> None:
+    """An in-progress session with topic_id None still surfaces."""
+    _make_session(
+        db,
+        topic_id=None,
+        state=SessionState.IN_PROGRESS,
+        created_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    db.commit()
+
+    response = await build_home_response(db)
+
+    assert response.continue_last is not None
+    assert response.continue_last.topic_id is None
+    assert response.continue_last.topic_path is None
 
 
 async def test_continue_last_is_none_when_no_in_progress(db: DbSession) -> None:

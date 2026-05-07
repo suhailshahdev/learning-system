@@ -24,7 +24,6 @@ from app.models.enums import (  # noqa: TC002
     TopicStatus,
     TransportKind,
 )
-from app.schemas.session_api import SessionResponse  # noqa: TC002
 from pydantic import BaseModel, ConfigDict
 
 
@@ -125,7 +124,7 @@ class HomeResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     is_blank_slate: bool
-    continue_last: SessionResponse | None
+    continue_last: RecentSessionSummary | None
     due_for_review: list[LearnedItemSummary]
     focus_by_domain: list[DomainFocus]
     recent_sessions: list[RecentSessionSummary]

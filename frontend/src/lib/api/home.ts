@@ -12,7 +12,6 @@ import { apiFetch } from "@/lib/api/client";
 import {
     DifficultySchema,
     LearningModeSchema,
-    SessionResponseSchema,
 } from "@/lib/api/sessions";
 
 // TopicStatus mirrors app/models/enums.py. Local to home.ts because
@@ -75,7 +74,7 @@ export type RecentSessionSummary = z.infer<typeof RecentSessionSummarySchema>;
 
 export const HomeResponseSchema = z.object({
     is_blank_slate: z.boolean(),
-    continue_last: SessionResponseSchema.nullable(),
+    continue_last: RecentSessionSummarySchema.nullable(),
     due_for_review: z.array(LearnedItemSummarySchema),
     focus_by_domain: z.array(DomainFocusSchema),
     recent_sessions: z.array(RecentSessionSummarySchema),

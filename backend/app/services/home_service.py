@@ -35,7 +35,6 @@ from app.schemas.home import (
     RecentSessionSummary,
     TopicSummary,
 )
-from app.schemas.session_api import SessionResponse
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -107,25 +106,37 @@ def _is_blank_slate(db: DbSession) -> bool:
     return session_count == 0
 
 
-def _continue_last(db: DbSession) -> SessionResponse | None:
+def _continue_last(db: DbSession) -> RecentSessionSummary | None:
     """Most recent IN_PROGRESS session, or None.
 
     Multiple in-progress sessions are allowed by the schema.
-    This returns the most recent one by created_at.
+    Returns the most recent one by created_at with topic_path
+    joined for the home dashboard CTA. Topic-less sessions
+    (cross-domain or pre-resolution) still resolve via outer
+    join.
     """
-    session = (
-        db.execute(
-            select(Session)
-            .where(Session.state == SessionState.IN_PROGRESS)
-            .order_by(Session.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if session is None:
+    row = db.execute(
+        select(Session, Topic.path)
+        .join(Topic, Session.topic_id == Topic.id, isouter=True)
+        .where(Session.state == SessionState.IN_PROGRESS)
+        .order_by(Session.created_at.desc())
+        .limit(1)
+    ).one_or_none()
+
+    if row is None:
         return None
-    return SessionResponse.model_validate(session)
+
+    session, topic_path = row
+    return RecentSessionSummary(
+        id=session.id,
+        topic_id=session.topic_id,
+        topic_path=topic_path,
+        state=session.state,
+        transport_kind=session.transport_kind,
+        mode_used=session.mode_used,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
 
 
 def _due_for_review(db: DbSession) -> list[LearnedItemSummary]:
