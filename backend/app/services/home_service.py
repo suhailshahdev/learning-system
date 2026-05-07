@@ -32,6 +32,7 @@ from app.schemas.home import (
     HomeResponse,
     KnowledgeSummaryRow,
     LearnedItemSummary,
+    RecentSessionSummary,
     TopicSummary,
 )
 from app.schemas.session_api import SessionResponse
@@ -186,15 +187,34 @@ def _focus_by_domain(db: DbSession) -> list[DomainFocus]:
     ]
 
 
-def _recent_sessions(db: DbSession) -> list[SessionResponse]:
-    """Last RECENT_SESSIONS_LIMIT sessions, most recent first."""
-    sessions = (
-        db.execute(select(Session).order_by(Session.created_at.desc()).limit(RECENT_SESSIONS_LIMIT))
-        .scalars()
-        .all()
-    )
+def _recent_sessions(db: DbSession) -> list[RecentSessionSummary]:
+    """Last RECENT_SESSIONS_LIMIT sessions, most recent first.
 
-    return [SessionResponse.model_validate(s) for s in sessions]
+    Left-joins Topic so the row carries topic_path for dashboard
+    rendering. topic_path is None when the session has no topic
+    (cross-domain sessions or sessions abandoned before topic
+    resolution).
+    """
+    rows = db.execute(
+        select(Session, Topic.path)
+        .join(Topic, Session.topic_id == Topic.id, isouter=True)
+        .order_by(Session.created_at.desc())
+        .limit(RECENT_SESSIONS_LIMIT)
+    ).all()
+
+    return [
+        RecentSessionSummary(
+            id=session.id,
+            topic_id=session.topic_id,
+            topic_path=topic_path,
+            state=session.state,
+            transport_kind=session.transport_kind,
+            mode_used=session.mode_used,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+        for session, topic_path in rows
+    ]
 
 
 def _knowledge_summary(db: DbSession) -> list[KnowledgeSummaryRow]:

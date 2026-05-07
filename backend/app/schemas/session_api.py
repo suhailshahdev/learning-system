@@ -75,6 +75,21 @@ class StartSessionResponse(BaseModel):
     first_turn: ParsedTurn
 
 
+class ResumeSessionResponse(BaseModel):
+    """Response for GET /sessions/{id}.
+
+    Cold-load shape used when the frontend lands on the session
+    page without route state. parsed is the union of all three
+    response kinds because a resumed session might be mid-turn,
+    pending session-end approval, or (rarely) at a handover.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    session: SessionResponse
+    parsed: ParsedResponse
+
+
 class SendTurnResponse(BaseModel):
     """Response for POST /sessions/{id}/turns.
 

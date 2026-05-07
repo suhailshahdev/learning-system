@@ -24,6 +24,7 @@ from app.api.deps import (  # noqa: TC001
 )
 from app.models import Session, TransportKind
 from app.schemas.session_api import (
+    ResumeSessionResponse,
     SendTurnRequest,
     SendTurnResponse,
     SessionResponse,
@@ -31,6 +32,10 @@ from app.schemas.session_api import (
     StartSessionResponse,
 )
 from app.services.parser import ParseError
+from app.services.session_resume_service import (
+    SessionResumeError,
+    get_session_for_resume,
+)
 from app.services.session_service import (
     SessionServiceError,
     abandon_session,
@@ -165,3 +170,36 @@ async def abandon(
         raise _map_service_error(exc) from exc
 
     return SessionResponse.model_validate(abandoned)
+
+
+def _map_resume_error(exc: SessionResumeError) -> HTTPException:
+    """Translate a resume-service error to an HTTP exception.
+
+    Resume errors carry a kind discriminator so we map per-kind
+    rather than substring-matching the message. not_found is 404,
+    not_resumable is 409, no_parsed_turn is a data-integrity 500.
+    """
+    if exc.kind == "not_found":
+        return HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if exc.kind == "not_resumable":
+        return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+@router.get("/{session_id}", response_model=ResumeSessionResponse)
+async def resume(
+    session_id: str,
+    db: DbSession,
+) -> ResumeSessionResponse:
+    """Cold-load an in-progress session for the frontend.
+
+    Used when the session page loads without route state (deep
+    link, refresh, home dashboard click). Returns the session row
+    plus the latest parsed assistant response.
+    """
+    try:
+        session_resp, parsed = get_session_for_resume(db=db, session_id=session_id)
+    except SessionResumeError as exc:
+        raise _map_resume_error(exc) from exc
+
+    return ResumeSessionResponse(session=session_resp, parsed=parsed)

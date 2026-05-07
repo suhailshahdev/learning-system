@@ -7,7 +7,12 @@
  * no such endpoint. Add when in future needs reload-during-session
  * recovery.
  */
-import { useMutation, type UseMutationResult } from "@tanstack/react-query";
+import {
+    useMutation,
+    useQuery,
+    type UseMutationResult,
+    type UseQueryResult,
+} from "@tanstack/react-query";
 import { z } from "zod";
 
 import { apiFetch } from "@/lib/api/client";
@@ -227,5 +232,43 @@ export function useAbandonSession(): UseMutationResult<
 > {
     return useMutation({
         mutationFn: abandonSession,
+    });
+}
+
+// Resume (cold-load) hook for GET /sessions/{id}.
+//
+// Returns the session row plus the latest parsed response so
+// Session.tsx can render TurnView or SessionEndView without
+// route state. Used as fallback when location.state is missing
+// (deep links, refreshes, home dashboard clicks).
+
+export const ResumeSessionResponseSchema = z.object({
+    session: SessionResponseSchema,
+    parsed: ParsedResponseSchema,
+});
+export type ResumeSessionResponse = z.infer<typeof ResumeSessionResponseSchema>;
+
+async function fetchSession(
+    sessionId: string,
+    signal: AbortSignal,
+): Promise<ResumeSessionResponse> {
+    return apiFetch(`/sessions/${sessionId}`, {
+        schema: ResumeSessionResponseSchema,
+        signal,
+    });
+}
+
+export function useSession(
+    sessionId: string | undefined,
+): UseQueryResult<ResumeSessionResponse, Error> {
+    return useQuery({
+        queryKey: sessionKeys.detail(sessionId ?? ""),
+        queryFn: ({ signal }) => {
+            if (sessionId === undefined) {
+                throw new Error("session id is required");
+            }
+            return fetchSession(sessionId, signal);
+        },
+        enabled: sessionId !== undefined,
     });
 }

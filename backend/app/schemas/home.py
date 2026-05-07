@@ -20,7 +20,9 @@ from datetime import datetime  # noqa: TC003
 from app.models.enums import (  # noqa: TC002
     Difficulty,
     LearningMode,
+    SessionState,
     TopicStatus,
+    TransportKind,
 )
 from app.schemas.session_api import SessionResponse  # noqa: TC002
 from pydantic import BaseModel, ConfigDict
@@ -75,6 +77,27 @@ class LearnedItemSummary(BaseModel):
     last_reviewed_at: datetime | None
 
 
+class RecentSessionSummary(BaseModel):
+    """Compact projection of a Session row for the recent-sessions list.
+
+    Carries topic_path joined from the Topic table so the dashboard
+    row can show "Python > Data Types > Integers · in_progress"
+    without an N+1 fetch. Drops claude_chat_url and message count
+    because both are internal to the live session loop.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    topic_id: str | None
+    topic_path: str | None
+    state: SessionState
+    transport_kind: TransportKind
+    mode_used: LearningMode
+    created_at: datetime
+    updated_at: datetime
+
+
 class KnowledgeSummaryRow(BaseModel):
     """One row of the knowledge summary table.
 
@@ -105,5 +128,5 @@ class HomeResponse(BaseModel):
     continue_last: SessionResponse | None
     due_for_review: list[LearnedItemSummary]
     focus_by_domain: list[DomainFocus]
-    recent_sessions: list[SessionResponse]
+    recent_sessions: list[RecentSessionSummary]
     knowledge_summary: list[KnowledgeSummaryRow]

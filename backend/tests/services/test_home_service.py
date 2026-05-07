@@ -264,7 +264,7 @@ async def test_focus_by_domain_groups_in_progress_topics(db: DbSession) -> None:
 
 
 async def test_recent_sessions_limited_and_sorted(db: DbSession) -> None:
-    """Returns up to 5 sessions, most recent first."""
+    """Returns up to 5 sessions, most recent first, with topic_path joined."""
     topic = _make_topic(db, path="Python > Data Types > Integers")
     # Create 7 sessions across different dates
     for day in range(1, 8):
@@ -286,6 +286,30 @@ async def test_recent_sessions_limited_and_sorted(db: DbSession) -> None:
     # seeds should not appear in the result.
     assert response.recent_sessions[0].created_at.replace(tzinfo=None) == datetime(2026, 5, 7)
     assert response.recent_sessions[-1].created_at.replace(tzinfo=None) == datetime(2026, 5, 3)
+    # topic_path is joined in via outer join in the service
+    for summary in response.recent_sessions:
+        assert summary.topic_path == "Python > Data Types > Integers"
+
+
+async def test_recent_sessions_outer_joins_null_topic(db: DbSession) -> None:
+    """Sessions with topic_id None render with topic_path None.
+
+    Inner join would silently drop these. The home_service uses
+    isouter=True so cross-domain or pre-resolution sessions still
+    appear in recent_sessions.
+    """
+    _make_session(
+        db,
+        topic_id=None,
+        created_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    db.commit()
+
+    response = await build_home_response(db)
+
+    assert len(response.recent_sessions) == 1
+    assert response.recent_sessions[0].topic_id is None
+    assert response.recent_sessions[0].topic_path is None
 
 
 async def test_knowledge_summary_aggregates_by_domain_and_difficulty(db: DbSession) -> None:

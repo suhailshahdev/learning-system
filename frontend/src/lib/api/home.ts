@@ -58,12 +58,27 @@ export const KnowledgeSummaryRowSchema = z.object({
 });
 export type KnowledgeSummaryRow = z.infer<typeof KnowledgeSummaryRowSchema>;
 
+// RecentSessionSummary mirrors the backend schema. Drops claude_chat_url
+// and claude_chat_message_count (internal to the live session loop)
+// and adds topic_path joined from the Topic table.
+export const RecentSessionSummarySchema = z.object({
+    id: z.string(),
+    topic_id: z.string().nullable(),
+    topic_path: z.string().nullable(),
+    state: z.enum(["in_progress", "completed", "abandoned", "archived"]),
+    transport_kind: z.enum(["claude_playwright", "deepseek"]),
+    mode_used: LearningModeSchema,
+    created_at: z.string(),
+    updated_at: z.string(),
+});
+export type RecentSessionSummary = z.infer<typeof RecentSessionSummarySchema>;
+
 export const HomeResponseSchema = z.object({
     is_blank_slate: z.boolean(),
     continue_last: SessionResponseSchema.nullable(),
     due_for_review: z.array(LearnedItemSummarySchema),
     focus_by_domain: z.array(DomainFocusSchema),
-    recent_sessions: z.array(SessionResponseSchema),
+    recent_sessions: z.array(RecentSessionSummarySchema),
     knowledge_summary: z.array(KnowledgeSummaryRowSchema),
 });
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
