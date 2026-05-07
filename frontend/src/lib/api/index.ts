@@ -9,4 +9,5 @@
 export { ApiError } from "@/lib/api/client";
 export type { ApiErrorKind } from "@/lib/api/client";
 export * from "@/lib/api/health";
+export * from "@/lib/api/home";
 export * from "@/lib/api/sessions";
