@@ -119,7 +119,7 @@ def _continue_last(db: DbSession) -> RecentSessionSummary | None:
         select(Session, Topic.path)
         .join(Topic, Session.topic_id == Topic.id, isouter=True)
         .where(Session.state == SessionState.IN_PROGRESS)
-        .order_by(Session.created_at.desc())
+        .order_by(Session.updated_at.desc())
         .limit(1)
     ).one_or_none()
 

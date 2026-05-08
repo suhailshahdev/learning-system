@@ -28,16 +28,17 @@ from pydantic import BaseModel, ConfigDict
 
 
 class TopicSummary(BaseModel):
-    """Compact projection of a Topic row for the home dashboard.
+    """Compact projection of a Topic row.
 
-    Excludes parent_id, prerequisites, tags, and timestamps.
-    Consumers that need the full topic load it via the topics
-    endpoint.
+    Used by the home dashboard focus-by-domain section and the topics
+    tree. parent_id is included for tree rendering and ignored by
+    consumers that do not need it.
     """
 
     model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: str
+    parent_id: str | None
     path: str
     name: str
     domain: str

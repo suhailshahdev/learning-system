@@ -1,3 +1,5 @@
+import { Link } from "react-router";
+
 import { ApiStatus } from "@/components/api-status";
 import { BlankSlate } from "@/components/home/blank-slate";
 import { ContinueLast } from "@/components/home/continue-last";
@@ -15,9 +17,14 @@ export function Home(): React.JSX.Element {
 
     return (
         <div className="min-h-svh bg-background text-foreground">
-            <header className="flex items-center justify-end gap-4 p-4">
-                <ApiStatus />
-                <ModeToggle />
+            <header className="flex items-center justify-between gap-4 p-4">
+                <Link to="/topics" className="text-sm underline underline-offset-4">
+                    Topics
+                </Link>
+                <div className="flex items-center gap-4">
+                    <ApiStatus />
+                    <ModeToggle />
+                </div>
             </header>
             <main className="p-8">
                 {home.isPending ? (

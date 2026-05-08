@@ -26,6 +26,7 @@ export type TopicStatus = z.infer<typeof TopicStatusSchema>;
 
 export const TopicSummarySchema = z.object({
     id: z.string(),
+    parent_id: z.string().nullable(),
     path: z.string(),
     name: z.string(),
     domain: z.string(),
