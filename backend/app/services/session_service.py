@@ -25,7 +25,6 @@ from app.models import (
     SessionState,
     SessionTurn,
     Topic,
-    TopicStatus,
     TransportKind,
     TurnRole,
 )
@@ -37,6 +36,7 @@ from app.schemas.parsed_response import ParsedHandover, ParsedResponse, ParsedTu
 from app.services.knowledge_service import derive_assertions_for_session
 from app.services.parser import parse_response
 from app.services.prereq_service import PrereqsUnmetError, check_prerequisites
+from app.services.topic_crud import get_or_create_topic
 from app.transport.base import (
     ChatResumeMetadata,
     PriorMessage,
@@ -126,7 +126,7 @@ async def start_session(
 
     Returns the persisted Session and the parsed first turn.
     """
-    topic = _get_or_create_topic(db, topic_path)
+    topic = get_or_create_topic(db, topic_path)
 
     unmet = check_prerequisites(db, topic_path)
     if unmet:
@@ -620,30 +620,6 @@ def _rebuild_chat_metadata(session: Session) -> ChatResumeMetadata:
     )
 
 
-def _get_or_create_topic(db: DbSession, path: str) -> Topic:
-    """Find a topic by path and create one if missing.
-
-    Domain is denormalized from the first path segment per the
-    Topic model's documented invariant.
-    """
-    existing = db.query(Topic).filter(Topic.path == path).one_or_none()
-    if existing is not None:
-        return existing
-
-    domain = path.split(" > ", 1)[0]
-    name = path.rsplit(" > ", 1)[-1]
-
-    topic = Topic(
-        path=path,
-        domain=domain,
-        name=name,
-        status=TopicStatus.IN_PROGRESS,
-    )
-    db.add(topic)
-    db.flush()
-    return topic
-
-
 def _populate_topic_prerequisites(topic: Topic, parsed: ParsedTurn) -> None:
     """Write the first response's prereqs onto the topic if not already set.
 
@@ -788,7 +764,7 @@ def _build_learned_item(
 ) -> LearnedItem:
     """Build one LearnedItem from a (ParsedTurn, user-answer) pair."""
     parsed = ParsedTurn.model_validate(assistant_turn.parsed)
-    topic = _get_or_create_topic(db, parsed.topic_path)
+    topic = get_or_create_topic(db, parsed.topic_path)
 
     answer = parsed.expected_answer or OPEN_ANSWER_PLACEHOLDER
 
