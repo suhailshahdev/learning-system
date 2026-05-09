@@ -9,8 +9,18 @@ mode (error path).
 from __future__ import annotations
 
 import pytest
-from app.models.enums import Difficulty, GradingVerdict, LearningMode
-from app.schemas.parsed_response import ParsedHandover, ParsedSessionEnd, ParsedTurn
+from app.models.enums import Difficulty, DomainKind, GradingVerdict, LearningMode
+from app.schemas.parsed_response import (
+    ParsedHandover,
+    ParsedSessionEnd,
+    ParsedToolCall,
+    ParsedTurn,
+)
+from app.schemas.tools import (
+    CreateDomainCall,
+    CreateOrUpdateTopicCall,
+    GetTopicsByDomainCall,
+)
 from app.services.parser import ParseError, parse_response
 
 # Happy-path turn with all fields populated meaningfully. Represents
@@ -142,6 +152,35 @@ USER_STATE: Confident on basic arithmetic
 """
 
 
+# Tool calls. The block body is a JSON object with `name` and `args`
+# keys. Pydantic's discriminated union narrows to the specific call
+# variant based on `name`.
+
+TOOL_CALL_LIST_DOMAINS = """\
+---TOOL_CALL---
+{"name": "list_domains", "args": {}}
+---END---
+"""
+
+TOOL_CALL_GET_TOPICS = """\
+---TOOL_CALL---
+{"name": "get_topics_by_domain", "args": {"domain_name": "Python"}}
+---END---
+"""
+
+TOOL_CALL_CREATE_DOMAIN = """\
+---TOOL_CALL---
+{"name": "create_domain", "args": {"name": "Rust", "kind": "language", "description": "Systems language"}}
+---END---
+"""
+
+TOOL_CALL_CREATE_OR_UPDATE_TOPIC = """\
+---TOOL_CALL---
+{"name": "create_or_update_topic", "args": {"path": "Python > Data Types > Integers", "difficulty": "beginner", "prerequisites": [{"topic_path": "Python > Basics", "min_difficulty": "beginner"}]}}
+---END---
+"""
+
+
 class TestParseTurn:
     def test_full_turn_parses(self) -> None:
         result = parse_response(TURN_FULL)
@@ -214,6 +253,41 @@ class TestParseHandover:
         assert result.next_planned == "Boolean operations"
         assert result.open_threads == "User asked about complex numbers"
         assert result.user_state == "Confident on basic arithmetic"
+
+
+class TestParseToolCall:
+    def test_no_args_tool_call_parses(self) -> None:
+        result = parse_response(TOOL_CALL_LIST_DOMAINS)
+        assert isinstance(result, ParsedToolCall)
+        assert result.kind == "tool_call"
+        assert result.call.name == "list_domains"
+        # raw_text preserves the original block content for error_log.
+        assert "list_domains" in result.raw_text
+
+    def test_simple_args_tool_call_parses(self) -> None:
+        result = parse_response(TOOL_CALL_GET_TOPICS)
+        assert isinstance(result, ParsedToolCall)
+        assert result.call.name == "get_topics_by_domain"
+        assert isinstance(result.call, GetTopicsByDomainCall)
+        assert result.call.args.domain_name == "Python"
+
+    def test_create_domain_tool_call_parses(self) -> None:
+        result = parse_response(TOOL_CALL_CREATE_DOMAIN)
+        assert isinstance(result, ParsedToolCall)
+        assert isinstance(result.call, CreateDomainCall)
+        assert result.call.args.name == "Rust"
+        assert result.call.args.kind == DomainKind.LANGUAGE
+        assert result.call.args.description == "Systems language"
+
+    def test_create_or_update_topic_tool_call_parses(self) -> None:
+        result = parse_response(TOOL_CALL_CREATE_OR_UPDATE_TOPIC)
+        assert isinstance(result, ParsedToolCall)
+        assert isinstance(result.call, CreateOrUpdateTopicCall)
+        assert result.call.args.path == "Python > Data Types > Integers"
+        assert result.call.args.difficulty == Difficulty.BEGINNER
+        assert len(result.call.args.prerequisites) == 1
+        assert result.call.args.prerequisites[0].topic_path == "Python > Basics"
+        assert result.call.args.prerequisites[0].min_difficulty == Difficulty.BEGINNER
 
 
 class TestParseErrors:
@@ -299,4 +373,45 @@ class TestParseErrors:
     def test_handover_unknown_key_raises(self) -> None:
         text = HANDOVER.replace("DOMAIN_FOCUS:", "MYSTERY_KEY:")
         with pytest.raises(ParseError, match="Unknown handover key"):
+            parse_response(text)
+
+    def test_tool_call_missing_end_raises(self) -> None:
+        text = TOOL_CALL_LIST_DOMAINS.replace("---END---\n", "")
+        with pytest.raises(ParseError, match="TOOL_CALL must be followed by END"):
+            parse_response(text)
+
+    def test_tool_call_invalid_json_raises(self) -> None:
+        text = "---TOOL_CALL---\nthis is not json\n---END---\n"
+        with pytest.raises(ParseError, match="not valid JSON"):
+            parse_response(text)
+
+    def test_tool_call_non_object_json_raises(self) -> None:
+        text = "---TOOL_CALL---\n[1, 2, 3]\n---END---\n"
+        with pytest.raises(ParseError, match="must be a JSON object"):
+            parse_response(text)
+
+    def test_tool_call_unknown_tool_name_raises(self) -> None:
+        text = '---TOOL_CALL---\n{"name": "fly_to_moon", "args": {}}\n---END---\n'
+        with pytest.raises(ParseError, match="schema validation"):
+            parse_response(text)
+
+    def test_tool_call_invalid_args_raises(self) -> None:
+        # create_domain requires `name` and `kind`. Missing required fields.
+        text = '---TOOL_CALL---\n{"name": "create_domain", "args": {}}\n---END---\n'
+        with pytest.raises(ParseError, match="schema validation"):
+            parse_response(text)
+
+    def test_tool_call_extra_args_raises(self) -> None:
+        # tools.py uses extra="forbid" so unknown args fail validation.
+        text = (
+            "---TOOL_CALL---\n"
+            '{"name": "list_domains", "args": {"unexpected": "value"}}\n'
+            "---END---\n"
+        )
+        with pytest.raises(ParseError, match="schema validation"):
+            parse_response(text)
+
+    def test_tool_call_empty_body_raises(self) -> None:
+        text = "---TOOL_CALL---\n\n---END---\n"
+        with pytest.raises(ParseError, match="empty"):
             parse_response(text)

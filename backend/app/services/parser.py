@@ -19,9 +19,10 @@ bugs in saved session data.
 
 from __future__ import annotations
 
+import json
 import re
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.common import Prerequisite
@@ -30,8 +31,10 @@ from app.schemas.parsed_response import (
     ParsedHandover,
     ParsedResponse,
     ParsedSessionEnd,
+    ParsedToolCall,
     ParsedTurn,
 )
+from app.schemas.tools import ToolCall
 
 # Matches a delimiter line and captures the name. Anchored to whole
 # line so a stray `---FOO---` inside content (e.g., a comment in a
@@ -79,6 +82,12 @@ MIN_BLOCKS_WITH_END_MARKER = 2
 MIN_CODE_BLOCK_LINES = 2
 
 
+# Module-level adapter so the discriminated-union validator is built
+# once. TypeAdapter compilation is the expensive part so the same
+# instance is reused to keep tool-call parsing cheap.
+_TOOL_CALL_ADAPTER: TypeAdapter[ToolCall] = TypeAdapter(ToolCall)
+
+
 class ParseError(Exception):
     """A response could not be parsed into a known shape.
 
@@ -116,6 +125,8 @@ def parse_response(text: str) -> ParsedResponse:
         return _parse_session_end(blocks, raw=text)
     if first_marker == "HANDOVER":
         return _parse_handover(blocks, raw=text)
+    if first_marker == "TOOL_CALL":
+        return _parse_tool_call(blocks, raw=text)
 
     raise ParseError(f"Unknown leading delimiter: {first_marker!r}.", raw_response=text)
 
@@ -196,6 +207,60 @@ def _parse_handover(blocks: list[tuple[str, str]], raw: str) -> ParsedHandover:
         return ParsedHandover.model_validate(fields)
     except ValidationError as e:
         raise ParseError("Handover failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_tool_call(blocks: list[tuple[str, str]], raw: str) -> ParsedToolCall:
+    """Build a ParsedToolCall from a block list starting with TOOL_CALL.
+
+    The block carries a single JSON payload between the TOOL_CALL
+    delimiter and the END delimiter. Validates against the
+    discriminated ToolCall union which dispatches on the `name`
+    field to the matching call envelope.
+
+    Returns a ParsedToolCall carrying both the validated call and
+    the raw block text. The session-service loop logs raw_text to
+    error_log if the handler later fails so the original LLM
+    output is preserved for inspection.
+    """
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END":
+        raise ParseError("TOOL_CALL must be followed by END.", raw_response=raw)
+
+    body = blocks[0][1]
+    if not body:
+        raise ParseError("TOOL_CALL block is empty.", raw_response=raw)
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise ParseError(
+            f"TOOL_CALL body is not valid JSON: {e.msg}",
+            raw_response=raw,
+            cause=e,
+        ) from e
+
+    if not isinstance(data, dict):
+        raise ParseError(
+            f"TOOL_CALL body must be a JSON object, got {type(data).__name__}.",
+            raw_response=raw,
+        )
+
+    try:
+        call = _TOOL_CALL_ADAPTER.validate_python(data)
+    except ValidationError as e:
+        raise ParseError(
+            "Tool call failed schema validation.",
+            raw_response=raw,
+            cause=e,
+        ) from e
+
+    try:
+        return ParsedToolCall.model_validate({"call": call, "raw_text": body})
+    except ValidationError as e:
+        raise ParseError(
+            "ParsedToolCall failed schema validation.",
+            raw_response=raw,
+            cause=e,
+        ) from e
 
 
 def _parse_handover_body(body: str, raw: str) -> dict[str, str]:
