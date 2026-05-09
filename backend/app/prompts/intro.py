@@ -2,18 +2,41 @@
 
 The intro is the first message every chat receives. It tells the
 LLM what format to reply in and what enum values are valid. It
-contains no user-specific or session-specific data; that layers in
-during future plan when service code reads from `user_profile`,
-`teaching_preference`, `domain`, and `user_knowledge_assertion`.
+also pre-loads existing domain names and the user's knowledge
+summary so the LLM doesn't burn tool-call turns fetching them on
+every session start.
 
-Mode and difficulty values are interpolated from `app/models/enums.py`
-so the intro and the parser share one source of truth. Adding a new
-mode in `LearningMode` automatically extends what the LLM is told.
+Domain names and knowledge summary come from the same handlers
+the LLM would call as tools. This keeps the intro and the tool
+surface aligned: changes to either path are reflected by both
+without coordinated edits.
+
+Tool definitions cover only the four reactive tools (lookups and
+upserts the LLM uses mid-session). The two tools whose data is
+pre-loaded into the intro (list_domains, get_user_knowledge_summary)
+exist in the registry for the side-panel assistant and refresh
+cases but are not advertised as tools the teaching LLM should
+call during a normal session.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
+from typing import TYPE_CHECKING
+
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
+from app.schemas.tools import (
+    GetUserKnowledgeSummaryInput,
+    ListDomainsInput,
+)
+from app.services.tools.handlers import (
+    get_user_knowledge_summary,
+    list_domains,
+)
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session as DbSession
+
 
 # Short description per mode, in the order they appear in
 # LearningMode. Edit here when adding a mode in the enum, the
@@ -51,16 +74,23 @@ _VERDICT_DESCRIPTIONS: dict[GradingVerdict, str] = {
 }
 
 
-def build_intro() -> str:
-    """Return the static system intro for any LLM transport.
+async def build_intro(db: DbSession) -> str:
+    """Return the system intro for any LLM transport.
 
-    Used as the first message of every chat. Dynamic context such as
-    user name, knowledge summary, domains, and teaching preferences
-    will be added in a future step by composing this with additional
-    sections.
+    Pre-loads existing domains and the user's knowledge summary
+    from the same handlers the tool surface exposes. The teaching
+    LLM sees this on the first message of every chat, including
+    after a chat handover.
+
+    Adding new sections (active teaching preferences, resume/JD
+    excerpts, etc.) follows the same pattern: query the source of
+    truth, format into a labeled section, append.
     """
     _check_mode_descriptions_complete()
     _check_verdict_descriptions_complete()
+
+    domains_section = await _build_domains_section(db)
+    knowledge_section = await _build_knowledge_section(db)
 
     modes_pipe = " | ".join(m.value for m in LearningMode)
     verdicts_pipe = " | ".join(v.value for v in GradingVerdict)
@@ -138,6 +168,18 @@ OPEN_THREADS: <unresolved threads>
 USER_STATE: <what you noticed about the user>
 ---END_HANDOVER---
 
+To call a tool (read or write system state):
+
+---TOOL_CALL---
+{{"name": "<tool_name>", "args": {{<tool args>}}}}
+---END---
+
+The next user message will contain the tool result. Parse it
+and continue with whatever you needed the tool for. You may
+call multiple tools in sequence before producing a teaching
+turn, but try to minimize tool calls when the information you
+need is already in this intro.
+
 LEARNING MODES
 ==============
 
@@ -153,10 +195,61 @@ DIFFICULTY VALUES
 
 {difficulty_csv}
 
+EXISTING DOMAINS
+================
+
+{domains_section}
+
+USER KNOWLEDGE
+==============
+
+{knowledge_section}
+
+AVAILABLE TOOLS
+===============
+
+You have access to four tools for reading and writing system
+state during a session. Call them via the ---TOOL_CALL---
+format above.
+
+  get_topics_by_domain
+    args: {{"domain_name": "<name>"}}
+    Returns existing topics within one domain. Call before
+    introducing a topic so you can reuse existing paths
+    instead of creating duplicates with slightly different
+    wording.
+
+  create_domain
+    args: {{"name": "<name>", "kind": "<kind>",
+            "description": "<optional>"}}
+    Creates a new domain. Call only when no existing domain
+    fits. kind is one of: language, framework, library,
+    concept, tool, practice, other. Idempotent on name.
+
+  create_or_update_topic
+    args: {{"path": "<Domain > Category > Subtopic>",
+            "difficulty": "<beginner|intermediate|advanced>",
+            "prerequisites": [{{"topic_path": "...",
+                                "min_difficulty": "..."}}, ...],
+            "parent_path": "<optional>"}}
+    Creates a new topic or updates metadata on an existing
+    one. Call when introducing a new topic so its difficulty
+    and prerequisites are recorded for future sessions.
+    Optional fields can be omitted.
+
+  get_recent_sessions
+    args: {{"limit": <int 1-20>}}
+    Returns the last N sessions with topic paths and modes.
+    Call when the user asks about recent work or you need
+    cross-session context.
+
 RULES
 =====
 
 - Topic paths use the format: Domain > Category > Subtopic.
+- Reuse existing domain names exactly (see EXISTING DOMAINS).
+  If no existing domain fits, call create_domain first, then
+  use the new domain name in topic paths.
 - Every teaching turn must include DIFFICULTY and PREREQUISITES.
 - Grade the user's previous answer in GRADING and GRADING_EXPLANATION.
   Always grade on follow-up turns; use NONE for both fields only on
@@ -184,6 +277,43 @@ RULES
 - Never include text before the first delimiter or after the
   closing one.
 """
+
+
+async def _build_domains_section(db: DbSession) -> str:
+    """Format the existing domains as a labeled section.
+
+    Empty domain list reads as a marker so the LLM knows it can
+    propose any domain via create_domain.
+    """
+    output = await list_domains(db, ListDomainsInput())
+    if not output.domains:
+        return "(none yet — call create_domain to seed your first one)"
+    lines = []
+    for domain in output.domains:
+        if domain.description:
+            lines.append(f"  {domain.name} ({domain.kind.value}) — {domain.description}")
+        else:
+            lines.append(f"  {domain.name} ({domain.kind.value})")
+    return "\n".join(lines)
+
+
+async def _build_knowledge_section(db: DbSession) -> str:
+    """Format the user's knowledge summary as a labeled section.
+
+    Empty assertion list reads as a marker so the LLM knows it
+    has no prior context for this user.
+    """
+    output = await get_user_knowledge_summary(db, GetUserKnowledgeSummaryInput())
+    if not output.rows:
+        return "(no prior knowledge recorded — adapt difficulty as you go)"
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for row in output.rows:
+        grouped[row.domain].append(f"{row.difficulty.value} ({row.count})")
+    lines = []
+    for domain in sorted(grouped):
+        levels = ", ".join(grouped[domain])
+        lines.append(f"  {domain}: {levels}")
+    return "\n".join(lines)
 
 
 def _check_mode_descriptions_complete() -> None:

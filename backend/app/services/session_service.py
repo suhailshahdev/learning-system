@@ -132,7 +132,7 @@ async def start_session(
     if unmet:
         raise PrereqsUnmetError(unmet)
 
-    intro = build_intro()
+    intro = await build_intro(db)
     first_prompt = build_first_prompt(topic_path)
 
     try:
@@ -487,7 +487,7 @@ async def _open_new_chat_with_handover(
     Returns the new chat handle, the raw response, and the parsed
     teaching turn.
     """
-    combined_intro = f"{build_intro()}\n\n---\n\n{_render_handover_block(handover)}"
+    combined_intro = f"{await build_intro(db)}\n\n---\n\n{_render_handover_block(handover)}"
     first_message = build_turn_prompt(answer)
 
     try:
