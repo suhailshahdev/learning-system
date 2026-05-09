@@ -13,7 +13,7 @@ delimiter line in the text:
 Anything else is a ParseError. The parser is strict by design:
 every required field must be present, every enum value must be
 valid, every prerequisite pair must be well-formed. Loud failures
-catch prompt-format drift early; lenient parsing would hide real
+catch prompt format drift early. Lenient parsing would hide real
 bugs in saved session data.
 """
 
@@ -24,13 +24,13 @@ import re
 from pydantic import ValidationError
 
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
+from app.schemas.common import Prerequisite
 from app.schemas.parsed_response import (
     CodeBlock,
     ParsedHandover,
     ParsedResponse,
     ParsedSessionEnd,
     ParsedTurn,
-    Prerequisite,
 )
 
 # Matches a delimiter line and captures the name. Anchored to whole

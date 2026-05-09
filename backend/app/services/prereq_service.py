@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.models import Difficulty, Topic, UserKnowledgeAssertion, UserProfile
 from app.models.user_profile import SINGLETON_ID
-from app.schemas.parsed_response import Prerequisite
+from app.schemas.common import Prerequisite
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession

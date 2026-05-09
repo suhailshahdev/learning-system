@@ -17,22 +17,9 @@ from typing import Annotated, Literal
 # Same constraint as SQLAlchemy Mapped columns. ruff's TC002 does
 # not account for runtime-introspecting libraries.
 from app.models.enums import Difficulty, GradingVerdict, LearningMode  # noqa: TC002
+from app.schemas.common import Prerequisite  # noqa: TC002 (Pydantic runtime field resolution)
+from app.schemas.tools import ToolCall  # noqa: TC002 (Pydantic runtime field resolution)
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class Prerequisite(BaseModel):
-    """One prerequisite from the PREREQUISITES block.
-
-    The wire format is `topic_path:difficulty` per pair, comma-
-    separated. The parser splits and validates, so consumers see
-    structured data and can run prereq checks without re-parsing
-    strings.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    topic_path: str = Field(min_length=1)
-    min_difficulty: Difficulty
 
 
 class CodeBlock(BaseModel):
@@ -120,11 +107,37 @@ class ParsedHandover(BaseModel):
     user_state: str
 
 
-# Discriminated union over the three response shapes. Pydantic
+class ParsedToolCall(BaseModel):
+    """The LLM is invoking a tool to read or write system state.
+
+    Used by the Claude transport's structured-prompt fallback:
+    the LLM emits a ---TOOL_CALL--- block in chat output, the parser
+    validates it into this shape, and the session-service loop
+    executes the handler and feeds the result back as the next user
+    message.
+
+    The DeepSeek transport does not produce ParsedToolCall via the
+    parser. It uses native function calling and converts API
+    tool_calls into the same ToolCall value internally, then runs
+    through the same registry. Both paths converge on the registry
+    so handlers stay transport-agnostic.
+
+    raw_text is the original block content the LLM emitted, kept for
+    error_log when validation or execution fails.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["tool_call"] = "tool_call"
+    call: ToolCall
+    raw_text: str
+
+
+# Discriminated union over the four response shapes. Pydantic
 # narrows on the kind field and mypy follows in match-case blocks.
 # Use this as the parser return type so consumers can pattern-match
 # exhaustively.
 type ParsedResponse = Annotated[
-    ParsedTurn | ParsedSessionEnd | ParsedHandover,
+    ParsedTurn | ParsedSessionEnd | ParsedHandover | ParsedToolCall,
     Field(discriminator="kind"),
 ]
