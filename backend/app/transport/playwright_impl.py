@@ -7,6 +7,7 @@ keeps the user logged in across runs after the first login.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
@@ -20,7 +21,12 @@ from patchright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
 
-from app.transport.base import ChatResumeMetadata, TransportError, TransportResponse
+from app.transport.base import (
+    ChatResumeMetadata,
+    ToolResult,
+    TransportError,
+    TransportResponse,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -196,6 +202,34 @@ class PlaywrightClaudeTransport:
             self._pages_by_url.pop(chat.chat_url, None)
         if not chat.page.is_closed():
             await chat.page.close()
+
+    async def send_tool_results(
+        self, chat: PlaywrightChatHandle, results: list[ToolResult]
+    ) -> TransportResponse:
+        """Send tool execution results back as a delimited user message.
+
+        claude.ai has no `tool` role channel, so results are sent as
+        plain user messages wrapped in ---TOOL_RESULT--- blocks. The
+        intro tells the LLM to read content blocks and continue. One
+        block per result, separated by blank lines, sent in a single
+        user message to keep the message-count budget tight.
+        """
+        if chat.page.is_closed():
+            raise TransportError("Chat page has been closed externally.")
+
+        message = self._format_tool_results(results)
+        return await self._send_and_capture(chat, message)
+
+    @staticmethod
+    def _format_tool_results(results: list[ToolResult]) -> str:
+        """Format tool results as a sequence of delimited blocks."""
+        blocks = [
+            f"---TOOL_RESULT---\n"
+            f"{json.dumps({'call_id': result.call_id, 'content': result.content})}\n"
+            f"---END---"
+            for result in results
+        ]
+        return "\n\n".join(blocks)
 
     async def _verify_logged_in(self) -> None:
         """Open claude.ai once at startup and confirm we're authenticated."""

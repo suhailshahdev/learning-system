@@ -174,11 +174,16 @@ To call a tool (read or write system state):
 {{"name": "<tool_name>", "args": {{<tool args>}}}}
 ---END---
 
-The next user message will contain the tool result. Parse it
-and continue with whatever you needed the tool for. You may
-call multiple tools in sequence before producing a teaching
-turn, but try to minimize tool calls when the information you
-need is already in this intro.
+The next user message will contain the tool result in this format:
+
+---TOOL_RESULT---
+{{"call_id": "<id>", "content": <tool output as JSON>}}
+---END---
+
+Read the content and continue. You may call multiple tools
+in sequence before producing a teaching turn, but try to
+minimize tool calls when the information you need is already
+in this intro.
 
 LEARNING MODES
 ==============
@@ -210,7 +215,16 @@ AVAILABLE TOOLS
 
 You have access to four tools for reading and writing system
 state during a session. Call them via the ---TOOL_CALL---
-format above.
+format above. After you call a tool, the next user message
+will contain the result in this format:
+
+---TOOL_RESULT---
+{{"call_id": "<id>", "content": <tool output as JSON>}}
+---END---
+
+Read the content and continue with whatever you needed the
+tool for. You may call multiple tools in sequence before
+producing a teaching turn.
 
   get_topics_by_domain
     args: {{"domain_name": "<name>"}}

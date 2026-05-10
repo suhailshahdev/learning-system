@@ -12,12 +12,26 @@ request shape.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from app.transport.base import ChatResumeMetadata, TransportError, TransportResponse
+from app.schemas.tools import (
+    CreateDomainInput,
+    CreateOrUpdateTopicInput,
+    GetRecentSessionsInput,
+    GetTopicsByDomainInput,
+    ToolCall,
+)
+from app.transport.base import (
+    ChatResumeMetadata,
+    ToolResult,
+    TransportError,
+    TransportResponse,
+)
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -33,7 +47,65 @@ READ_TIMEOUT_S = 120.0
 TOTAL_TIMEOUT_S = 120.0
 
 
-Role = Literal["system", "user", "assistant"]
+# Module-level adapter so the discriminated-union validator is built
+# once. Same pattern as the parser uses.
+_TOOL_CALL_ADAPTER: TypeAdapter[ToolCall] = TypeAdapter(ToolCall)
+
+
+def _build_tools_param() -> list[dict[str, Any]]:
+    """Generate the API's `tools` parameter from the schema models.
+
+    OpenAI-compatible APIs expect each tool as:
+        {"type": "function",
+         "function": {"name": ..., "description": ..., "parameters": <JSON schema>}}
+
+    Schemas come from app.schemas.tools' input models. The four
+    advertised tools match what the intro tells the LLM. The two
+    pre-loaded tools (list_domains, get_user_knowledge_summary)
+    are not advertised because their data is in the intro already.
+    """
+    advertised: list[tuple[str, str, type[BaseModel]]] = [
+        (
+            "get_topics_by_domain",
+            "Returns existing topics within one domain. "
+            "Call before introducing a topic to reuse paths.",
+            GetTopicsByDomainInput,
+        ),
+        (
+            "create_domain",
+            "Creates a new domain. Idempotent on name. Call only when no existing domain fits.",
+            CreateDomainInput,
+        ),
+        (
+            "create_or_update_topic",
+            "Upserts a topic by path. Records difficulty, prerequisites, and parent_path.",
+            CreateOrUpdateTopicInput,
+        ),
+        (
+            "get_recent_sessions",
+            "Returns the last N sessions with topic paths and modes.",
+            GetRecentSessionsInput,
+        ),
+    ]
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": input_model.model_json_schema(),
+            },
+        }
+        for name, description, input_model in advertised
+    ]
+
+
+# Built once and reused, tools list doesn't change per call.
+_TOOLS_PARAM = _build_tools_param()
+
+
+Role = Literal["system", "user", "assistant", "tool"]
 
 
 @dataclass(frozen=True)
@@ -42,15 +114,31 @@ class Message:
 
     Frozen so handles can be safely shared across awaits without
     accidental mutation. The `role` literal matches the API's
-    expected values; mypy catches typos at the call site.
+    expected values, mypy catches typos at the call site.
+
+    For role="tool" messages, tool_call_id is the id from the
+    earlier assistant tool_call this message responds to. Required
+    by the API for correlation. None for non-tool messages.
+
+    For role="assistant" messages that contain tool_calls,
+    raw_tool_calls preserves the API's response shape so the
+    history can be replayed verbatim. None when the assistant
+    message was plain text.
     """
 
     role: Role
     content: str
+    tool_call_id: str | None = None
+    raw_tool_calls: list[dict[str, Any]] | None = None
 
-    def to_wire(self) -> dict[str, str]:
+    def to_wire(self) -> dict[str, Any]:
         """Serialize to the JSON shape the API expects."""
-        return {"role": self.role, "content": self.content}
+        wire: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_call_id is not None:
+            wire["tool_call_id"] = self.tool_call_id
+        if self.raw_tool_calls is not None:
+            wire["tool_calls"] = self.raw_tool_calls
+        return wire
 
 
 @dataclass
@@ -145,9 +233,32 @@ class DeepseekTransport:
 
     async def close(self, chat: DeepseekChatHandle) -> None:
         # Stateless API with no per-chat resources. This method exists only
-        # to satisfy the protocol uniformly; the handle is cleaned up by the
+        # to satisfy the protocol uniformly, the handle is cleaned up by the
         # caller.
         return None
+
+    async def send_tool_results(
+        self, chat: DeepseekChatHandle, results: list[ToolResult]
+    ) -> TransportResponse:
+        """Send tool execution results back as `tool` role messages.
+
+        Required by the OpenAI-compatible API after the assistant
+        responded with tool_calls: each tool result must be sent
+        as a separate message with role="tool" and the matching
+        tool_call_id. The next response can be plain text or
+        another round of tool_calls.
+        """
+        if self._client is None:
+            raise TransportError("Transport not started. Call start() first.")
+
+        next_history = [
+            *chat.history,
+            *[
+                Message(role="tool", content=result.content, tool_call_id=result.call_id)
+                for result in results
+            ],
+        ]
+        return await self._post_chat_completion(chat, next_history)
 
     async def _send_and_capture(self, chat: DeepseekChatHandle, message: str) -> TransportResponse:
         """Post one user turn, append the assistant reply to history.
@@ -155,14 +266,32 @@ class DeepseekTransport:
         Mutates the handle's history with both the new user message
         and the assistant response on success. On failure the history
         is left as it was so the caller can retry.
+
+        The assistant response may be plain text (returned as
+        TransportResponse.text) or a list of tool calls (returned as
+        TransportResponse.tool_calls). The two are mutually exclusive
+        in any single API response.
+        """
+        next_history = [*chat.history, Message(role="user", content=message)]
+        return await self._post_chat_completion(chat, next_history)
+
+    async def _post_chat_completion(
+        self, chat: DeepseekChatHandle, next_history: list[Message]
+    ) -> TransportResponse:
+        """Post a chat completion request and parse the response.
+
+        Shared by _send_and_capture (for user messages) and
+        send_tool_results (for tool result messages). Encapsulates
+        the API contract: payload shape, error handling, and
+        parsing the response into either text or tool calls.
         """
         if self._client is None:
             raise TransportError("Transport not started.")
 
-        next_history = [*chat.history, Message(role="user", content=message)]
         payload = {
             "model": chat.model,
             "messages": [m.to_wire() for m in next_history],
+            "tools": _TOOLS_PARAM,
             "stream": False,
         }
 
@@ -186,12 +315,29 @@ class DeepseekTransport:
             raise TransportError("DeepSeek returned no choices.")
 
         try:
-            assistant_text = choices[0]["message"]["content"]
+            message_data = choices[0]["message"]
         except (KeyError, TypeError) as e:
-            raise TransportError(
-                "DeepSeek response missing choices[0].message.content.", cause=e
-            ) from e
+            raise TransportError("DeepSeek response missing choices[0].message.", cause=e) from e
 
+        # The API returns either content (text) or tool_calls or both.
+        # In practice, when tool_calls is present, content is null or
+        # empty. We surface tool_calls when present and ignore any
+        # accompanying preamble text.
+        raw_tool_calls = message_data.get("tool_calls")
+        if raw_tool_calls:
+            tool_calls = self._parse_tool_calls(raw_tool_calls)
+            chat.history = [
+                *next_history,
+                Message(
+                    role="assistant",
+                    content=message_data.get("content") or "",
+                    raw_tool_calls=raw_tool_calls,
+                ),
+            ]
+            chat.message_count += 1
+            return TransportResponse(text="", tool_calls=tool_calls)
+
+        assistant_text = message_data.get("content")
         if not isinstance(assistant_text, str):
             raise TransportError(
                 f"DeepSeek returned non-string content: {type(assistant_text).__name__}."
@@ -200,6 +346,43 @@ class DeepseekTransport:
         chat.history = [*next_history, Message(role="assistant", content=assistant_text)]
         chat.message_count += 1
         return TransportResponse(text=assistant_text)
+
+    def _parse_tool_calls(self, raw_tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
+        """Validate API tool_calls into the discriminated ToolCall union.
+
+        DeepSeek's API returns each tool call as:
+            {"id": "...", "type": "function",
+             "function": {"name": "...", "arguments": "<JSON string>"}}
+
+        We extract name+arguments and feed through the same
+        TypeAdapter the parser uses for Claude transport, so both
+        paths converge on identical ToolCall values.
+        """
+        out: list[ToolCall] = []
+        for raw in raw_tool_calls:
+            try:
+                function = raw["function"]
+                name = function["name"]
+                arguments_str = function["arguments"]
+            except (KeyError, TypeError) as e:
+                raise TransportError(f"Malformed tool_call from DeepSeek: {raw!r}", cause=e) from e
+
+            try:
+                args = json.loads(arguments_str)
+            except json.JSONDecodeError as e:
+                raise TransportError(
+                    f"Tool call {name!r} has invalid JSON arguments: {e.msg}", cause=e
+                ) from e
+
+            try:
+                call = _TOOL_CALL_ADAPTER.validate_python({"name": name, "args": args})
+            except ValidationError as e:
+                raise TransportError(
+                    f"Tool call {name!r} failed schema validation: {e}", cause=e
+                ) from e
+
+            out.append(call)
+        return out
 
 
 _: type[LLMTransport[DeepseekChatHandle]] = DeepseekTransport

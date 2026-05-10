@@ -10,11 +10,12 @@ holds the handle without knowing what is inside it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+
+if TYPE_CHECKING:
+    from app.schemas.tools import ToolCall
 
 Handle = TypeVar("Handle")
-
-
 PriorRole = Literal["system", "user", "assistant"]
 
 
@@ -22,11 +23,45 @@ PriorRole = Literal["system", "user", "assistant"]
 class TransportResponse:
     """One response from an LLM transport.
 
-    Single field today; structured so future fields (token counts,
-    rate-limit info, model used) can be added without breaking callers.
+    Carries either the LLM's text response or a list of tool calls
+    to execute. The two are mutually exclusive in any single turn:
+    the LLM either responds with text or requests tool execution.
+
+    `text` is the LLM's response when it returned text. Empty when
+    the response was tool calls only.
+
+    `tool_calls` is a list of structured tool invocations. Empty
+    when the response was plain text. Non-empty when the LLM is
+    asking for tool execution. The session-service loop runs each
+    via the registry and feeds results back via send_tool_results.
+
+    Both transports surface tool calls through this same field.
+    DeepSeek populates it from the API's native tool_calls response
+    field. Claude transport populates it after parsing a
+    ---TOOL_CALL--- block from chat text.
     """
 
-    text: str
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """The result of executing one tool call.
+
+    Sent back to the LLM via send_tool_results so the LLM can see
+    what the tool returned and continue. `call_id` matches the id
+    the LLM provided when it requested the tool. DeepSeek's API requires
+    this for correlation. The Playwright transport does not need it
+    but carries the field for symmetry.
+
+    `content` is a JSON string of the tool's output. The transport
+    decides how to format this in the next API call (tool role
+    message for DeepSeek, user message for Claude transport).
+    """
+
+    call_id: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -50,7 +85,7 @@ class ChatResumeMetadata:
     chat_url is set by transports that have a server-side chat to
     navigate to. prior_messages is set for transports that rebuild
     history from persisted turns. Different transports use different
-    fields; building one struct with both keeps the service layer
+    fields, building one struct with both keeps the service layer
     transport-agnostic.
     """
 
@@ -79,7 +114,12 @@ class LLMTransport(Protocol[Handle]):
 
     A transport manages one or more chats with an LLM. Each chat is
     represented by a handle returned from start_new_chat or resume_chat
-    and passed through send and close.
+    and passed through send, send_tool_results, and close.
+
+    Responses can carry either text or tool calls. When the LLM
+    requests tool execution, the session-service loop runs each
+    tool via the registry and sends the results back via
+    send_tool_results, then waits for the LLM's next response.
     """
 
     async def start_new_chat(
@@ -92,6 +132,9 @@ class LLMTransport(Protocol[Handle]):
         transports that have no native system-role channel (claude.ai)
         avoid producing a separate onboarding turn before the real
         teaching turn lands.
+
+        The response may carry tool_calls. The session-service loop
+        handles them and calls send_tool_results.
         """
         ...
 
@@ -100,7 +143,25 @@ class LLMTransport(Protocol[Handle]):
         ...
 
     async def send(self, chat: Handle, message: str) -> TransportResponse:
-        """Send a user message and return the assistant's response."""
+        """Send a user message and return the assistant's response.
+
+        The response may carry tool_calls. The session-service loop
+        handles them and calls send_tool_results.
+        """
+        ...
+
+    async def send_tool_results(self, chat: Handle, results: list[ToolResult]) -> TransportResponse:
+        """Send tool execution results back to the LLM.
+
+        Used after a previous response carried tool_calls. The
+        transport formats the results appropriately for its API
+        (tool role messages for OpenAI-compatible APIs, user
+        messages for chat-text-based transports) and returns the
+        LLM's next response.
+
+        The next response may itself carry tool_calls if the LLM
+        wants to chain calls before producing teaching content.
+        """
         ...
 
     async def close(self, chat: Handle) -> None:
