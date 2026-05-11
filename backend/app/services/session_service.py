@@ -14,6 +14,7 @@ state path are deferred to later steps.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -32,16 +33,25 @@ from app.prompts.first_prompt import build_first_prompt
 from app.prompts.handover_prompt import build_handover_request
 from app.prompts.intro import build_intro
 from app.prompts.turn_prompt import build_turn_prompt
-from app.schemas.parsed_response import ParsedHandover, ParsedResponse, ParsedTurn
+from app.schemas.parsed_response import (
+    ParsedHandover,
+    ParsedResponse,
+    ParsedToolCall,
+    ParsedTurn,
+)
 from app.services.knowledge_service import derive_assertions_for_session
 from app.services.parser import parse_response
 from app.services.prereq_service import PrereqsUnmetError, check_prerequisites
+from app.services.tools.handlers import ToolHandlerError
+from app.services.tools.registry import execute_tool_call
 from app.services.topic_crud import get_or_create_topic
 from app.transport.base import (
     ChatResumeMetadata,
     PriorMessage,
     PriorRole,
+    ToolResult,
     TransportError,
+    TransportResponse,
 )
 
 if TYPE_CHECKING:
@@ -151,7 +161,7 @@ async def start_session(
         ) from e
 
     try:
-        parsed = parse_response(response.text)
+        parsed = _response_to_parsed(response)
     except Exception as e:
         _log_service_error(
             db,
@@ -166,6 +176,17 @@ async def start_session(
         )
         db.rollback()
         raise SessionServiceError("Parse failed on first response.", cause=e) from e
+
+    response, parsed, _ = await _execute_until_terminal(
+        db=db,
+        transport=transport,
+        chat=chat,
+        response=response,
+        parsed=parsed,
+        session_id=None,
+        transport_kind=transport_kind,
+        base_turn_index=0,
+    )
 
     if not isinstance(parsed, ParsedTurn):
         _log_service_error(
@@ -275,7 +296,7 @@ async def _send_within_chat(
         ) from e
 
     try:
-        parsed = parse_response(response.text)
+        parsed = _response_to_parsed(response)
     except Exception as e:
         _log_service_error(
             db,
@@ -290,6 +311,8 @@ async def _send_within_chat(
         db.rollback()
         raise SessionServiceError("Parse failed on user-answer response.", cause=e) from e
 
+    # The user's answer goes in first so its turn_index is before any
+    # tool turns the helper persists. Helper indexes start at next_index + 1.
     user_turn = SessionTurn(
         session_id=session.id,
         turn_index=next_index,
@@ -298,15 +321,28 @@ async def _send_within_chat(
         parsed=None,
         mode=None,
     )
+    db.add(user_turn)
+    db.flush()
+
+    response, parsed, after_tools_index = await _execute_until_terminal(
+        db=db,
+        transport=transport,
+        chat=chat,
+        response=response,
+        parsed=parsed,
+        session_id=session.id,
+        transport_kind=session.transport_kind,
+        base_turn_index=next_index + 1,
+    )
+
     assistant_turn = SessionTurn(
         session_id=session.id,
-        turn_index=next_index + 1,
+        turn_index=after_tools_index,
         role=TurnRole.ASSISTANT,
         raw_content=response.text,
         parsed=parsed.model_dump(mode="json"),
         mode=parsed.mode if isinstance(parsed, ParsedTurn) else None,
     )
-    db.add(user_turn)
     db.add(assistant_turn)
 
     session.claude_chat_message_count = getattr(chat, "message_count", 0)
@@ -435,7 +471,7 @@ async def _request_and_parse_handover(
         ) from e
 
     try:
-        parsed = parse_response(handover_response.text)
+        parsed = _response_to_parsed(handover_response)
     except Exception as e:
         _log_service_error(
             db,
@@ -449,6 +485,25 @@ async def _request_and_parse_handover(
         )
         db.rollback()
         raise SessionServiceError("Parse failed on handover response.", cause=e) from e
+
+    # A handover-request response should land directly. Tool calls in
+    # this narrow path would chain extra turns onto a dying chat and
+    # bloat the next chat's intro. Reject defensively.
+    if isinstance(parsed, ParsedToolCall):
+        _log_service_error(
+            db,
+            kind="session.handover.unexpected_tool_call",
+            message=f"Tool call {parsed.call.name!r} in handover request response.",
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "tool_name": parsed.call.name,
+            },
+        )
+        db.rollback()
+        raise SessionServiceError(
+            f"Unexpected tool call in handover request: {parsed.call.name!r}.",
+        )
 
     if not isinstance(parsed, ParsedHandover):
         _log_service_error(
@@ -506,7 +561,7 @@ async def _open_new_chat_with_handover(
         ) from e
 
     try:
-        parsed = parse_response(new_response.text)
+        parsed = _response_to_parsed(new_response)
     except Exception as e:
         _log_service_error(
             db,
@@ -522,6 +577,28 @@ async def _open_new_chat_with_handover(
         raise SessionServiceError(
             "Parse failed on new chat's first response after handover.", cause=e
         ) from e
+
+    # Tool calls on a new chat's very first reply land between
+    # TRANSITION and the new chat's first USER turn in the natural
+    # flow, but _send_with_handover persists all 5 transition turns
+    # in one block after this function returns. Mixing helper-written
+    # tool turns into that ordering needs a real refactor. Reject
+    # defensively until real data shows this path matters.
+    if isinstance(parsed, ParsedToolCall):
+        _log_service_error(
+            db,
+            kind="session.handover.new_chat_unexpected_tool_call",
+            message=f"Tool call {parsed.call.name!r} on new chat's first response.",
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "tool_name": parsed.call.name,
+            },
+        )
+        db.rollback()
+        raise SessionServiceError(
+            f"Unexpected tool call after handover: {parsed.call.name!r}.",
+        )
 
     if not isinstance(parsed, ParsedTurn):
         _log_service_error(
@@ -571,6 +648,180 @@ def _handover_response_marker(handover: ParsedHandover) -> str:
     output and grep stay useful without dumping the whole block.
     """
     return f"[handover requested by service; structured fields in parsed]\n{handover.last_question}"
+
+
+def _response_to_parsed(response: TransportResponse) -> ParsedResponse:
+    """Translate a TransportResponse into a ParsedResponse.
+
+    Two paths produce tool calls. Claude transport emits them as
+    ---TOOL_CALL--- blocks in chat text, which parse_response
+    yields as ParsedToolCall. DeepSeek transport surfaces them
+    via the API's native function calling, populating
+    TransportResponse.tool_calls directly with the response text
+    empty. Both must converge on the same ParsedToolCall shape so
+    the session-service loop handles them uniformly.
+
+    When tool_calls is non-empty, synthesize a ParsedToolCall for
+    the first entry. The current wire format and helper loop process
+    one tool call per iteration. If the API returned multiple, only
+    the first is handled per pass and the helper loops to handle
+    the rest. raw_text is reconstructed from the call's JSON shape
+    so error_log entries stay greppable in the same shape as the
+    Claude path.
+
+    Otherwise fall through to text parsing.
+    """
+    if response.tool_calls:
+        call = response.tool_calls[0]
+        raw_text = call.model_dump_json()
+        return ParsedToolCall(call=call, raw_text=raw_text)
+    return parse_response(response.text)
+
+
+async def _execute_until_terminal(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    chat: Any,
+    response: TransportResponse,
+    parsed: ParsedResponse,
+    session_id: str | None,
+    transport_kind: TransportKind,
+    base_turn_index: int,
+) -> tuple[TransportResponse, ParsedResponse, int]:
+    """Drive the tool-execution loop until a terminal response lands.
+
+    Called from every transport-call site (start_session, _send_within_chat,
+    handover paths). Takes the transport's response and the parsed
+    shape. If parsed is a ParsedToolCall, executes the handler,
+    persists a TOOL_CALL + TOOL_RESULT turn pair, sends the result
+    back to the transport, parses the next response, and loops.
+
+    The ParsedToolCall variant never escapes this helper: by return
+    time, parsed is guaranteed to be ParsedTurn, ParsedSessionEnd, or
+    ParsedHandover. Callers branch on those three kinds without
+    worrying about tool calls.
+
+    session_id is None when called from start_session before the
+    Session row exists. Tool-call turns are not persisted in that
+    case (the FK would fail) but the registry calls still run. This
+    is the only path that allows tool execution without persistence.
+    In practice, tool calls during session start are rare and the
+    handler's own commit captures any state change.
+
+    Returns the final (response, parsed, next_turn_index) so callers
+    can persist their own turns starting at the returned index.
+    """
+    next_index = base_turn_index
+
+    while isinstance(parsed, ParsedToolCall):
+        # Execute the handler. The registry commits handler writes
+        # independently so a later failure to produce a valid
+        # teaching turn does not roll back correct system-state changes.
+        try:
+            output = await execute_tool_call(db, parsed.call)
+            content = output.model_dump_json()
+        except ToolHandlerError as e:
+            # Roll back first so pending writes from the caller (e.g. the
+            # user turn added in _send_within_chat before this helper ran)
+            # are discarded before the log commit.
+            db.rollback()
+            _log_service_error(
+                db,
+                kind="session.tool_call.handler_failed",
+                message=e.message,
+                session_id=session_id,
+                context={
+                    "transport_kind": transport_kind.value,
+                    "tool_name": parsed.call.name,
+                    "raw_text": parsed.raw_text,
+                },
+            )
+            raise SessionServiceError(
+                f"Tool handler {parsed.call.name!r} failed: {e.message}", cause=e
+            ) from e
+
+        # Persist the TOOL_CALL + TOOL_RESULT turn pair. Skipped when
+        # session_id is None (start_session pre-session-row case).
+        if session_id is not None:
+            db.add(
+                SessionTurn(
+                    session_id=session_id,
+                    turn_index=next_index,
+                    role=TurnRole.TOOL_CALL,
+                    raw_content=parsed.raw_text,
+                    parsed=parsed.model_dump(mode="json"),
+                    mode=None,
+                )
+            )
+            db.add(
+                SessionTurn(
+                    session_id=session_id,
+                    turn_index=next_index + 1,
+                    role=TurnRole.TOOL_RESULT,
+                    raw_content=content,
+                    parsed=json.loads(content),
+                    mode=None,
+                )
+            )
+            db.flush()
+            next_index += 2
+
+        # Send the result back to the transport. The LLM may respond
+        # with another tool call (chained execution) or with terminal
+        # content. The loop continues either way.
+        call_id = _tool_call_id(parsed)
+        result = ToolResult(call_id=call_id, content=content)
+
+        try:
+            response = await transport.send_tool_results(chat, [result])
+        except TransportError as e:
+            db.rollback()
+            _log_service_error(
+                db,
+                kind="session.tool_call.send_results_failed",
+                message=e.message,
+                session_id=session_id,
+                context={
+                    "transport_kind": transport_kind.value,
+                    "tool_name": parsed.call.name,
+                },
+            )
+            raise SessionServiceError(
+                f"Transport failed sending tool results: {e.message}", cause=e
+            ) from e
+
+        try:
+            parsed = _response_to_parsed(response)
+        except Exception as e:
+            db.rollback()
+            _log_service_error(
+                db,
+                kind="session.tool_call.parse_failed",
+                message=str(e),
+                session_id=session_id,
+                context={
+                    "transport_kind": transport_kind.value,
+                    "raw_response": response.text,
+                },
+            )
+            raise SessionServiceError("Parse failed on response after tool result.", cause=e) from e
+
+    return response, parsed, next_index
+
+
+def _tool_call_id(parsed: ParsedToolCall) -> str:
+    """Extract the call id from a ParsedToolCall.
+
+    DeepSeek's native function calling requires a call_id for
+    correlating results back to the originating call: the API
+    rejects subsequent requests if the `tool` role message's
+    tool_call_id does not match the assistant message's
+    tool_calls[i].id. The Claude transport has no id concept in
+    its chat wire format, so its ToolCall.id is None and the
+    tool name is the stable fallback.
+    """
+    return parsed.call.id or parsed.call.name
 
 
 def _next_turn_index(db: DbSession, session_id: str) -> int:

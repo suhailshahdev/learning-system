@@ -261,36 +261,46 @@ class ListDomainsCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["list_domains"] = "list_domains"
     args: ListDomainsInput
+    # Correlation id from the LLM provider (DeepSeek's native function
+    # calling). None for transports without a per-call id concept
+    # (Claude via claude.ai's chat wire format). The session-service
+    # helper falls back to the tool name when id is None.
+    id: str | None = None
 
 
 class CreateDomainCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["create_domain"] = "create_domain"
     args: CreateDomainInput
+    id: str | None = None
 
 
 class GetTopicsByDomainCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["get_topics_by_domain"] = "get_topics_by_domain"
     args: GetTopicsByDomainInput
+    id: str | None = None
 
 
 class CreateOrUpdateTopicCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["create_or_update_topic"] = "create_or_update_topic"
     args: CreateOrUpdateTopicInput
+    id: str | None = None
 
 
 class GetUserKnowledgeSummaryCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["get_user_knowledge_summary"] = "get_user_knowledge_summary"
     args: GetUserKnowledgeSummaryInput
+    id: str | None = None
 
 
 class GetRecentSessionsCall(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["get_recent_sessions"] = "get_recent_sessions"
     args: GetRecentSessionsInput
+    id: str | None = None
 
 
 type ToolCall = Annotated[

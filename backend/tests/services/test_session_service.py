@@ -14,6 +14,9 @@ import pytest
 from app.models import (
     AssertionSource,
     Difficulty,
+    Domain,
+    DomainKind,
+    ErrorLog,
     LearnedItem,
     LearnedItemStatus,
     LearningMode,
@@ -38,7 +41,7 @@ from app.services.session_service import (
     send_user_answer,
     start_session,
 )
-from app.transport.base import TransportError
+from app.transport.base import TransportError, TransportResponse
 
 from tests.services.fakes import FakeTransport
 
@@ -1003,3 +1006,347 @@ async def test_abandon_session_rejects_already_abandoned(db: DbSession) -> None:
 
     with pytest.raises(SessionServiceError, match="expected in_progress"):
         await abandon_session(db=db, session_id=session.id)
+
+
+# ---------- Tool-execution loop tests ----------
+
+
+def _list_domains_tool_call_response() -> TransportResponse:
+    """A TransportResponse carrying a list_domains TOOL_CALL block.
+
+    Both transports route their tool calls through ToolCall after
+    parsing (Claude) or normalizing (DeepSeek native). This fixture
+    produces what the parser would yield from a Claude-style block,
+    by including the same JSON the parser would validate.
+    """
+    body = '{"name": "list_domains", "args": {}}'
+    return TransportResponse(
+        text=f"---TOOL_CALL---\n{body}\n---END---\n",
+    )
+
+
+def _create_domain_tool_call_response(domain_name: str = "GraphQL") -> TransportResponse:
+    """A TransportResponse carrying a create_domain TOOL_CALL block."""
+    body = f'{{"name": "create_domain", "args": {{"name": "{domain_name}", "kind": "framework"}}}}'
+    return TransportResponse(
+        text=f"---TOOL_CALL---\n{body}\n---END---\n",
+    )
+
+
+def _bad_create_domain_tool_call_response() -> TransportResponse:
+    """A TOOL_CALL response whose handler will fail.
+
+    parent_path references a topic that does not exist, which
+    create_or_update_topic rejects with ToolHandlerError.
+    """
+    body = (
+        '{"name": "create_or_update_topic", '
+        '"args": {"path": "Python > Bogus > Path", '
+        '"parent_path": "Nonexistent > Topic"}}'
+    )
+    return TransportResponse(
+        text=f"---TOOL_CALL---\n{body}\n---END---\n",
+    )
+
+
+async def test_start_session_with_tool_call_executes_handler_and_proceeds(
+    db: DbSession,
+) -> None:
+    """A tool call on session start runs the handler and continues to the teaching turn.
+
+    Verifies the helper drives the loop end-to-end: tool executes,
+    handler commits real DB state, transport receives the result,
+    the next response parses as a teaching turn, session lands
+    in IN_PROGRESS.
+
+    Tool turns are not persisted on session start (session_id=None
+    in the helper) per the pre-session-row design call.
+    """
+    transport = FakeTransport(
+        responses=[
+            _create_domain_tool_call_response("GraphQL"),
+            VALID_TURN_RESPONSE,
+        ]
+    )
+
+    session, parsed = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    # Real handler effect: the GraphQL domain row exists in the DB.
+    # This is the falsifying test: not "did execute_tool_call get called"
+    # but "did the row land".
+    graphql = db.query(Domain).filter(Domain.name == "GraphQL").one_or_none()
+    assert graphql is not None
+    assert graphql.kind == DomainKind.FRAMEWORK
+
+    # Transport saw the tool result on the chat.
+    assert len(transport.chats) == 1
+    chat = transport.chats[0]
+    assert len(chat.tool_results_received) == 1
+    assert len(chat.tool_results_received[0]) == 1
+
+    # Session reached the teaching turn.
+    assert session.state == SessionState.IN_PROGRESS
+    assert isinstance(parsed, ParsedTurn)
+    assert parsed.mode == LearningMode.FLASHCARD
+
+    # Tool turns not persisted on session start.
+    tool_turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .filter(SessionTurn.role.in_([TurnRole.TOOL_CALL, TurnRole.TOOL_RESULT]))
+        .all()
+    )
+    assert len(tool_turns) == 0
+
+
+async def test_send_user_answer_with_single_tool_call_persists_turn_pair(
+    db: DbSession,
+) -> None:
+    """A tool call during a follow-up turn persists TOOL_CALL + TOOL_RESULT in order.
+
+    Turn order is: USER (next_index), TOOL_CALL (next_index + 1),
+    TOOL_RESULT (next_index + 2), ASSISTANT (next_index + 3). The
+    helper's index threading keeps turn_index unbroken.
+    """
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            _list_domains_tool_call_response(),
+            SECOND_TURN_RESPONSE,
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # 2 from start + 4 from send (user + tool_call + tool_result + assistant)
+    assert len(turns) == 6
+    assert [t.role for t in turns] == [
+        TurnRole.SYSTEM,
+        TurnRole.ASSISTANT,
+        TurnRole.USER,
+        TurnRole.TOOL_CALL,
+        TurnRole.TOOL_RESULT,
+        TurnRole.ASSISTANT,
+    ]
+    # turn_index is unbroken
+    assert [t.turn_index for t in turns] == [0, 1, 2, 3, 4, 5]
+
+    # TOOL_CALL turn has the validated call in parsed
+    tool_call_turn = turns[3]
+    assert tool_call_turn.parsed is not None
+    assert tool_call_turn.parsed["kind"] == "tool_call"
+    assert tool_call_turn.parsed["call"]["name"] == "list_domains"
+
+    # TOOL_RESULT turn has the handler's output as structured JSON
+    tool_result_turn = turns[4]
+    assert tool_result_turn.parsed is not None
+    assert "domains" in tool_result_turn.parsed
+
+
+async def test_send_user_answer_with_chained_tool_calls_persists_all_pairs(
+    db: DbSession,
+) -> None:
+    """Two tool calls in sequence persist two TOOL_CALL + TOOL_RESULT pairs.
+
+    The LLM chains: first list_domains (read), then create_domain
+    (write), then produces the teaching turn. Verifies the helper
+    loops correctly and indexes thread through.
+    """
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            _list_domains_tool_call_response(),
+            _create_domain_tool_call_response("Rust"),
+            SECOND_TURN_RESPONSE,
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # 2 from start + 6 from send (user + 2 tool pairs + assistant)
+    assert len(turns) == 8
+    assert [t.role for t in turns] == [
+        TurnRole.SYSTEM,
+        TurnRole.ASSISTANT,
+        TurnRole.USER,
+        TurnRole.TOOL_CALL,
+        TurnRole.TOOL_RESULT,
+        TurnRole.TOOL_CALL,
+        TurnRole.TOOL_RESULT,
+        TurnRole.ASSISTANT,
+    ]
+    assert [t.turn_index for t in turns] == [0, 1, 2, 3, 4, 5, 6, 7]
+
+    # Verify both handlers actually ran by checking DB state
+    rust = db.query(Domain).filter(Domain.name == "Rust").one_or_none()
+    assert rust is not None
+
+    # Transport received two separate tool_result batches
+    assert len(transport.chats) == 2  # one from start, one resumed
+    resumed = transport.chats[1]
+    assert len(resumed.tool_results_received) == 2
+
+
+async def test_send_user_answer_tool_handler_failure_rolls_back_and_logs(
+    db: DbSession,
+) -> None:
+    """A failing tool handler rolls back service writes and logs to error_log.
+
+    Critical falsifying test: verifies the rollback by
+    checking the user turn (added before the helper ran) is gone,
+    AND verifies the error_log entry has the right kind.
+    """
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            _bad_create_domain_tool_call_response(),
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    turns_before = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
+
+    with pytest.raises(SessionServiceError, match="Tool handler"):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer="3",
+        )
+
+    # Rollback: no new turns persisted from the failed send.
+    turns_after = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
+    assert turns_after == turns_before
+
+    # error_log has the new row with the right kind
+    error_logs = (
+        db.query(ErrorLog).filter(ErrorLog.kind == "session.tool_call.handler_failed").all()
+    )
+    assert len(error_logs) == 1
+    assert error_logs[0].session_id == session.id
+    assert "create_or_update_topic" in error_logs[0].context["tool_name"]
+
+
+async def test_send_user_answer_tool_calls_increment_message_count(
+    db: DbSession,
+) -> None:
+    """Tool calls advance the chat's message_count toward HANDOVER_THRESHOLD.
+
+    Tool turns count against the per-chat budget.
+    FakeTransport.send_tool_results increments message_count, so the
+    session row's claude_chat_message_count reflects both the user-
+    answer send and any tool-result sends.
+    """
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            _list_domains_tool_call_response(),
+            _create_domain_tool_call_response("Go"),
+            SECOND_TURN_RESPONSE,
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    # After start: message_count = 1 (the first message)
+    assert session.claude_chat_message_count == 1
+
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    db.refresh(session)
+    # FakeTransport.resume_chat preserves the prior count (1), then
+    # the user-answer send adds 1, then two tool-result sends add 2.
+    # Total = 4.
+    assert session.claude_chat_message_count == 4
+
+
+async def test_send_user_answer_unexpected_tool_call_in_handover_path(
+    db: DbSession,
+) -> None:
+    """Tool calls on the dying chat's handover response are rejected defensively.
+
+    Per the defensive-raise design call, the handover request path
+    does not loop through tool calls. The new error_log kind
+    session.handover.unexpected_tool_call fires.
+    """
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            _list_domains_tool_call_response(),  # dying chat returns tool call instead of handover
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    session.claude_chat_message_count = HANDOVER_THRESHOLD
+    db.commit()
+
+    with pytest.raises(SessionServiceError, match="Unexpected tool call in handover"):
+        await send_user_answer(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+            answer="3",
+        )
+
+    # error_log captures the rejection
+    error_logs = (
+        db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.unexpected_tool_call").all()
+    )
+    assert len(error_logs) == 1
+    assert error_logs[0].session_id == session.id

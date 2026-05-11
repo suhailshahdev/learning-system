@@ -288,11 +288,20 @@ class DeepseekTransport:
         if self._client is None:
             raise TransportError("Transport not started.")
 
+        # Thinking mode requires the caller to preserve `reasoning_content`
+        # across tool-call round trips within a single user turn. The helper
+        # loop in session_service does not currently track that field, so
+        # any tool-using session against a thinking-mode model fails on the
+        # second API call with HTTP 400. Disabling thinking mode keeps the
+        # rest of the architecture working. Trigger to revisit: LLM tool-
+        # selection quality drops measurably and chain-of-thought is the
+        # likely fix.
         payload = {
             "model": chat.model,
             "messages": [m.to_wire() for m in next_history],
             "tools": _TOOLS_PARAM,
             "stream": False,
+            "thinking": {"type": "disabled"},
         }
 
         try:
@@ -354,13 +363,16 @@ class DeepseekTransport:
             {"id": "...", "type": "function",
              "function": {"name": "...", "arguments": "<JSON string>"}}
 
-        We extract name+arguments and feed through the same
+        We extract id, name, and arguments and feed through the same
         TypeAdapter the parser uses for Claude transport, so both
-        paths converge on identical ToolCall values.
+        paths converge on identical ToolCall values. The id is
+        required when sending tool results back to the API as
+        tool_call_id, so any missing id is a hard error here.
         """
         out: list[ToolCall] = []
         for raw in raw_tool_calls:
             try:
+                call_id = raw["id"]
                 function = raw["function"]
                 name = function["name"]
                 arguments_str = function["arguments"]
@@ -375,7 +387,9 @@ class DeepseekTransport:
                 ) from e
 
             try:
-                call = _TOOL_CALL_ADAPTER.validate_python({"name": name, "args": args})
+                call = _TOOL_CALL_ADAPTER.validate_python(
+                    {"name": name, "args": args, "id": call_id}
+                )
             except ValidationError as e:
                 raise TransportError(
                     f"Tool call {name!r} failed schema validation: {e}", cause=e
