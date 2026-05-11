@@ -73,12 +73,22 @@ class TurnRole(StrEnum):
     chat when a session crosses the per-chat message threshold. The
     turn's raw_content holds the handover block that was carried
     over.
+
+    TOOL_CALL and TOOL_RESULT come in pairs around the
+    session-service tool-execution loop. TOOL_CALL records the LLM
+    requesting a tool with the raw call envelope in raw_content and
+    the validated ToolCall in parsed. TOOL_RESULT records the
+    handler's output sent back to the LLM. Both count toward the
+    per-chat message budget since they consume real turn space in
+    every transport.
     """
 
     ASSISTANT = "assistant"
     USER = "user"
     SYSTEM = "system"
     TRANSITION = "transition"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
 
 
 class LearnedItemStatus(StrEnum):
