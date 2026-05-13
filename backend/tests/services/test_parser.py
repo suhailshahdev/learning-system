@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from app.models.enums import Difficulty, DomainKind, GradingVerdict, LearningMode
 from app.schemas.parsed_response import (
+    ParsedGrading,
     ParsedHandover,
     ParsedSessionEnd,
     ParsedToolCall,
@@ -152,6 +153,49 @@ USER_STATE: Confident on basic arithmetic
 """
 
 
+# Standalone grading response with no code block.
+GRADING_SIMPLE = """\
+---GRADING---
+correct
+---GRADING_EXPLANATION---
+Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.
+---GRADING_EXPLANATION_CODE---
+NONE
+---END---
+"""
+
+# Standalone grading response with an explanation code block.
+GRADING_WITH_CODE = """\
+---GRADING---
+partial
+---GRADING_EXPLANATION---
+Close, but the loop body multiplies by 2, not adds 2. Trace it again
+with i = 0, 1, 2.
+---GRADING_EXPLANATION_CODE---
+python
+print(0 * 2)  # 0
+print(1 * 2)  # 2
+print(2 * 2)  # 4
+---END---
+"""
+
+# Standalone grading response for a free-form mode (explain_back,
+# socratic). Verdict is open_graded, explanation carries the
+# teaching feedback.
+GRADING_OPEN_GRADED = """\
+---GRADING---
+open_graded
+---GRADING_EXPLANATION---
+You're on the right track with the decorator pattern, but you missed
+that closures keep a reference to the enclosing scope. Try writing one
+without functools.wraps and see what happens to the wrapped function's
+name.
+---GRADING_EXPLANATION_CODE---
+NONE
+---END---
+"""
+
+
 # Tool calls. The block body is a JSON object with `name` and `args`
 # keys. Pydantic's discriminated union narrows to the specific call
 # variant based on `name`.
@@ -253,6 +297,32 @@ class TestParseHandover:
         assert result.next_planned == "Boolean operations"
         assert result.open_threads == "User asked about complex numbers"
         assert result.user_state == "Confident on basic arithmetic"
+
+
+class TestParseGrading:
+    def test_simple_grading_parses(self) -> None:
+        result = parse_response(GRADING_SIMPLE)
+        assert isinstance(result, ParsedGrading)
+        assert result.kind == "grading"
+        assert result.verdict == GradingVerdict.CORRECT
+        assert "Floor division" in result.explanation
+        assert result.explanation_code is None
+
+    def test_grading_with_code_block_parses(self) -> None:
+        result = parse_response(GRADING_WITH_CODE)
+        assert isinstance(result, ParsedGrading)
+        assert result.verdict == GradingVerdict.PARTIAL
+        assert "Trace it again" in result.explanation
+        assert result.explanation_code is not None
+        assert result.explanation_code.language == "python"
+        assert "print(0 * 2)" in result.explanation_code.body
+
+    def test_open_graded_verdict_parses(self) -> None:
+        result = parse_response(GRADING_OPEN_GRADED)
+        assert isinstance(result, ParsedGrading)
+        assert result.verdict == GradingVerdict.OPEN_GRADED
+        assert "decorator pattern" in result.explanation
+        assert result.explanation_code is None
 
 
 class TestParseToolCall:
@@ -414,4 +484,35 @@ class TestParseErrors:
     def test_tool_call_empty_body_raises(self) -> None:
         text = "---TOOL_CALL---\n\n---END---\n"
         with pytest.raises(ParseError, match="empty"):
+            parse_response(text)
+
+    def test_grading_missing_end_marker_raises(self) -> None:
+        text = GRADING_SIMPLE.replace("---END---\n", "")
+        with pytest.raises(ParseError, match="terminate with ---END---"):
+            parse_response(text)
+
+    def test_grading_invalid_verdict_raises(self) -> None:
+        text = GRADING_SIMPLE.replace("correct", "magnificent")
+        with pytest.raises(ParseError, match="Invalid GRADING"):
+            parse_response(text)
+
+    def test_grading_missing_explanation_raises(self) -> None:
+        # Drop the GRADING_EXPLANATION block entirely. The parser should
+        # detect the missing field rather than silently accepting two
+        # fields where three are required.
+        text = GRADING_SIMPLE.replace(
+            "---GRADING_EXPLANATION---\n"
+            "Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.\n",
+            "",
+        )
+        with pytest.raises(ParseError):
+            parse_response(text)
+
+    def test_grading_empty_explanation_raises(self) -> None:
+        text = GRADING_SIMPLE.replace(
+            "---GRADING_EXPLANATION---\n"
+            "Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.\n",
+            "---GRADING_EXPLANATION---\n\n",
+        )
+        with pytest.raises(ParseError, match="schema validation"):
             parse_response(text)

@@ -28,6 +28,7 @@ from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.common import Prerequisite
 from app.schemas.parsed_response import (
     CodeBlock,
+    ParsedGrading,
     ParsedHandover,
     ParsedResponse,
     ParsedSessionEnd,
@@ -61,6 +62,12 @@ TURN_FIELDS = (
     "REQUIREMENTS",
     "FOLLOWUP",
     "TAGS",
+)
+
+GRADING_FIELDS = (
+    "GRADING",
+    "GRADING_EXPLANATION",
+    "GRADING_EXPLANATION_CODE",
 )
 
 HANDOVER_KEYS = (
@@ -127,6 +134,8 @@ def parse_response(text: str) -> ParsedResponse:
         return _parse_handover(blocks, raw=text)
     if first_marker == "TOOL_CALL":
         return _parse_tool_call(blocks, raw=text)
+    if first_marker == "GRADING":
+        return _parse_grading(blocks, raw=text)
 
     raise ParseError(f"Unknown leading delimiter: {first_marker!r}.", raw_response=text)
 
@@ -207,6 +216,32 @@ def _parse_handover(blocks: list[tuple[str, str]], raw: str) -> ParsedHandover:
         return ParsedHandover.model_validate(fields)
     except ValidationError as e:
         raise ParseError("Handover failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_grading(blocks: list[tuple[str, str]], raw: str) -> ParsedGrading:
+    """Build a ParsedGrading from a block list starting with GRADING.
+
+    Standalone grading response shape: three required field blocks
+    (GRADING, GRADING_EXPLANATION, GRADING_EXPLANATION_CODE) followed
+    by END. Same structure as a ParsedTurn but smaller. The verdict
+    must be a valid GradingVerdict value (not the NONE sentinel that
+    embedded grading-on-turn accepted, since a standalone grading
+    response by definition has a verdict).
+    """
+    fields = _collect_fields(blocks, expected=GRADING_FIELDS, end_marker="END", raw=raw)
+
+    payload = {
+        "verdict": _parse_enum(fields["GRADING"], GradingVerdict, "GRADING", raw),
+        "explanation": fields["GRADING_EXPLANATION"],
+        "explanation_code": _parse_code_block(
+            fields["GRADING_EXPLANATION_CODE"], "GRADING_EXPLANATION_CODE", raw
+        ),
+    }
+
+    try:
+        return ParsedGrading.model_validate(payload)
+    except ValidationError as e:
+        raise ParseError("Grading failed schema validation.", raw_response=raw, cause=e) from e
 
 
 def _parse_tool_call(blocks: list[tuple[str, str]], raw: str) -> ParsedToolCall:

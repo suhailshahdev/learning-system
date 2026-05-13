@@ -88,6 +88,27 @@ class ParsedSessionEnd(BaseModel):
     summary: str = Field(min_length=1)
 
 
+class ParsedGrading(BaseModel):
+    """Grading of the user's previous answer, emitted as a standalone response.
+
+    LLM's first response to a user answer is grading-only:
+    a verdict, an explanation, and optional explanation code.
+    The LLM waits for the next user message (which will be
+    the system-generated "Continue with the next question.")
+    before emitting a teaching turn.
+
+    Wire format mirrors the standalone ParsedSessionEnd / ParsedHandover
+    shape: a top-level delimited block terminated by ---END---.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["grading"] = "grading"
+    verdict: GradingVerdict
+    explanation: str = Field(min_length=1)
+    explanation_code: CodeBlock | None = None
+
+
 class ParsedHandover(BaseModel):
     """Handover block emitted when a chat hits the message-count threshold.
 
@@ -133,11 +154,11 @@ class ParsedToolCall(BaseModel):
     raw_text: str
 
 
-# Discriminated union over the four response shapes. Pydantic
+# Discriminated union over the five response shapes. Pydantic
 # narrows on the kind field and mypy follows in match-case blocks.
 # Use this as the parser return type so consumers can pattern-match
 # exhaustively.
 type ParsedResponse = Annotated[
-    ParsedTurn | ParsedSessionEnd | ParsedHandover | ParsedToolCall,
+    ParsedTurn | ParsedSessionEnd | ParsedHandover | ParsedToolCall | ParsedGrading,
     Field(discriminator="kind"),
 ]

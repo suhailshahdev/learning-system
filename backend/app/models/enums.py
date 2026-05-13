@@ -81,6 +81,13 @@ class TurnRole(StrEnum):
     handler's output sent back to the LLM. Both count toward the
     per-chat message budget since they consume real turn space in
     every transport.
+
+    GRADING records the LLM's standalone grading response.
+    A teaching cycle now persists as USER (answer) -> GRADING
+    (LLM's grading) -> USER (continue prompt) -> ASSISTANT
+    (next teaching turn). approve_session's _build_learned_items
+    skips GRADING turns when pairing teaching turns with user
+    answers, same pattern it already uses for TRANSITION.
     """
 
     ASSISTANT = "assistant"
@@ -89,6 +96,7 @@ class TurnRole(StrEnum):
     TRANSITION = "transition"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    GRADING = "grading"
 
 
 class LearnedItemStatus(StrEnum):

@@ -20,7 +20,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Timestamps, UUIDPrimaryKey
-from app.models.enums import Difficulty, LearnedItemStatus, LearningMode
+from app.models.enums import Difficulty, GradingVerdict, LearnedItemStatus, LearningMode
 
 if TYPE_CHECKING:
     from app.models.session import Session
@@ -47,6 +47,10 @@ class LearnedItem(Base, UUIDPrimaryKey, Timestamps):
     )
     difficulty: Mapped[Difficulty | None] = mapped_column(
         SQLEnum(Difficulty, native_enum=False, length=32),
+        nullable=True,
+    )
+    grading_verdict: Mapped[GradingVerdict | None] = mapped_column(
+        SQLEnum(GradingVerdict, native_enum=False, length=32),
         nullable=True,
     )
     status: Mapped[LearnedItemStatus] = mapped_column(
