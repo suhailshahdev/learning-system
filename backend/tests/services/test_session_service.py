@@ -814,6 +814,100 @@ async def test_approve_session_runs_derivation_within_transaction(db: DbSession)
     assert derived[0].difficulty == Difficulty.BEGINNER
 
 
+async def test_approve_session_populates_grading_verdict_from_grading_turn(db: DbSession) -> None:
+    """The verdict on the GRADING turn following a user answer lands on the LearnedItem.
+
+    Falsifying test: not "did approve_session run" but "did the
+    verdict from the grading turn make it onto the minted item".
+    """
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, GRADING_CORRECT_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).all()
+    assert len(items) == 1
+    assert items[0].grading_verdict == GradingVerdict.CORRECT
+
+
+async def test_approve_session_populates_incorrect_verdict(db: DbSession) -> None:
+    """An incorrect verdict on the grading turn lands as INCORRECT on the item.
+
+    Pairs with the correct-verdict test to verify the mapping is
+    truly reading from the GRADING turn, not defaulting to one value.
+    """
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, GRADING_INCORRECT_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="2.5",
+    )
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).all()
+    assert len(items) == 1
+    assert items[0].grading_verdict == GradingVerdict.INCORRECT
+
+
+async def test_approve_session_leaves_verdict_none_when_no_grading_turn_follows(
+    db: DbSession,
+) -> None:
+    """A teaching turn with a user answer but no GRADING turn after gets verdict=None.
+
+    Represents two real cases: pre-split historical data (turns
+    were ASSISTANT, USER, ASSISTANT with no GRADING), and a session
+    truncated mid-cycle. The pairing logic must not invent a
+    verdict when the position is empty.
+    """
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+
+    # Manually add a USER turn at index 2 without a following GRADING turn.
+    # Simulates pre-split data shape or a session truncated after the user
+    # answered but before grading arrived.
+    db.add(
+        SessionTurn(
+            session_id=session.id,
+            turn_index=2,
+            role=TurnRole.USER,
+            raw_content="3",
+            parsed=None,
+            mode=None,
+        )
+    )
+    db.commit()
+
+    await approve_session(db=db, session_id=session.id)
+
+    items = db.query(LearnedItem).all()
+    assert len(items) == 1
+    assert items[0].grading_verdict is None
+
+
 HANDOVER_RESPONSE = """\
 ---HANDOVER---
 DOMAIN_FOCUS: Python
