@@ -93,8 +93,23 @@ class ResumeSessionResponse(BaseModel):
 class SendTurnResponse(BaseModel):
     """Response for POST /sessions/{id}/turns.
 
-    Wraps the parsed response from the LLM. Clients branch directly
-    on parsed.kind to handle each response shape.
+    Wraps the parsed response from the LLM. After the split-roundtrip
+    flow, the normal kind here is "grading". Clients branch on
+    parsed.kind to handle the rare "session_end" and "handover"
+    shapes that may also surface.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    parsed: ParsedResponse
+
+
+class ContinueSessionResponse(BaseModel):
+    """Response for POST /sessions/{id}/continue.
+
+    Returned after the client signals Continue past a grading
+    response. The normal kind is "turn" (the next teaching turn),
+    "session_end" and "handover" remain possible.
     """
 
     model_config = ConfigDict(frozen=True)

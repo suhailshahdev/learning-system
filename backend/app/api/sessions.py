@@ -24,6 +24,7 @@ from app.api.deps import (  # noqa: TC001
 )
 from app.models import Session, TransportKind
 from app.schemas.session_api import (
+    ContinueSessionResponse,
     ResumeSessionResponse,
     SendTurnRequest,
     SendTurnResponse,
@@ -40,6 +41,7 @@ from app.services.session_service import (
     SessionServiceError,
     abandon_session,
     approve_session,
+    request_next_question,
     send_user_answer,
     start_session,
 )
@@ -124,7 +126,12 @@ async def send_turn(
     playwright: PlaywrightTransportDep,
     deepseek: DeepseekTransportDep,
 ) -> SendTurnResponse:
-    """Send a user answer and return the LLM's parsed reply."""
+    """Send a user answer, return the grading response.
+
+    After the split-roundtrip flow, the parsed reply is normally
+    a ParsedGrading. The client signals Continue past the grading
+    to request the next teaching turn via the continue route.
+    """
     session = db.get(Session, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Session {session_id!r} not found.")
@@ -142,6 +149,38 @@ async def send_turn(
         raise _map_service_error(exc) from exc
 
     return SendTurnResponse(parsed=parsed)
+
+
+@router.post("/{session_id}/continue", response_model=ContinueSessionResponse)
+async def continue_session(
+    session_id: str,
+    db: DbSession,
+    playwright: PlaywrightTransportDep,
+    deepseek: DeepseekTransportDep,
+) -> ContinueSessionResponse:
+    """Request the next teaching turn after grading.
+
+    Called after the client has displayed a grading response and
+    the user (or the frontend prefetch) signals Continue. No body:
+    the continue prompt is service-generated. Returns the next
+    teaching turn, or rarely a session-end or handover.
+    """
+    session = db.get(Session, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Session {session_id!r} not found.")
+
+    transport = _pick_transport(session.transport_kind, playwright, deepseek)
+
+    try:
+        parsed = await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session_id,
+        )
+    except SessionServiceError as exc:
+        raise _map_service_error(exc) from exc
+
+    return ContinueSessionResponse(parsed=parsed)
 
 
 @router.post("/{session_id}/approve", response_model=SessionResponse)
