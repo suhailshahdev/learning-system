@@ -88,6 +88,14 @@ export const ParsedTurnSchema = z.object({
 });
 export type ParsedTurn = z.infer<typeof ParsedTurnSchema>;
 
+export const ParsedGradingSchema = z.object({
+    kind: z.literal("grading"),
+    verdict: GradingVerdictSchema,
+    explanation: z.string().min(1),
+    explanation_code: CodeBlockSchema.nullable(),
+});
+export type ParsedGrading = z.infer<typeof ParsedGradingSchema>;
+
 export const ParsedSessionEndSchema = z.object({
     kind: z.literal("session_end"),
     summary: z.string().min(1),
@@ -107,6 +115,7 @@ export type ParsedHandover = z.infer<typeof ParsedHandoverSchema>;
 
 export const ParsedResponseSchema = z.discriminatedUnion("kind", [
     ParsedTurnSchema,
+    ParsedGradingSchema,
     ParsedSessionEndSchema,
     ParsedHandoverSchema,
 ]);
@@ -141,6 +150,11 @@ export const SendTurnResponseSchema = z.object({
     parsed: ParsedResponseSchema,
 });
 export type SendTurnResponse = z.infer<typeof SendTurnResponseSchema>;
+
+export const ContinueSessionResponseSchema = z.object({
+    parsed: ParsedResponseSchema,
+});
+export type ContinueSessionResponse = z.infer<typeof ContinueSessionResponseSchema>;
 
 export type StartSessionVariables = {
     topic_path: string;
@@ -181,6 +195,15 @@ async function sendTurn(variables: SendTurnVariables): Promise<SendTurnResponse>
     });
 }
 
+async function continueSession(
+    variables: SessionIdVariables,
+): Promise<ContinueSessionResponse> {
+    return apiFetch(`/sessions/${variables.session_id}/continue`, {
+        method: "POST",
+        schema: ContinueSessionResponseSchema,
+    });
+}
+
 async function approveSession(variables: SessionIdVariables): Promise<SessionResponse> {
     return apiFetch(`/sessions/${variables.session_id}/approve`, {
         method: "POST",
@@ -212,6 +235,16 @@ export function useSendTurn(): UseMutationResult<
 > {
     return useMutation({
         mutationFn: sendTurn,
+    });
+}
+
+export function useContinueSession(): UseMutationResult<
+    ContinueSessionResponse,
+    Error,
+    SessionIdVariables
+> {
+    return useMutation({
+        mutationFn: continueSession,
     });
 }
 

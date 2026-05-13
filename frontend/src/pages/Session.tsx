@@ -81,8 +81,13 @@ export function Session(): React.JSX.Element {
     }
 
     // Handover is unexpected at the frontend because the backend
-    // handles chat transitions transparently inside send_user_answer.
-    if (parsed.kind === "handover") {
+    // handles chat transitions transparently inside request_next_question.
+    //
+    // Grading wire types exist but the TurnView refactor that displays
+    // grading as its own panel is not in yet. Until then, a grading
+    // response surfaces as unexpected so the type system stays
+    // exhaustive and any premature grading response is caught.
+    if (parsed.kind === "handover" || parsed.kind === "grading") {
         return (
             <div className="min-h-svh bg-background text-foreground p-8">
                 <p className="text-muted-foreground">
