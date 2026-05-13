@@ -17,6 +17,7 @@ from app.models import (
     Domain,
     DomainKind,
     ErrorLog,
+    GradingVerdict,
     LearnedItem,
     LearnedItemStatus,
     LearningMode,
@@ -29,7 +30,7 @@ from app.models import (
     TurnRole,
     UserKnowledgeAssertion,
 )
-from app.schemas.parsed_response import ParsedTurn
+from app.schemas.parsed_response import ParsedGrading, ParsedTurn
 from app.services.parser import ParseError
 from app.services.prereq_service import PrereqsUnmetError
 from app.services.session_service import (
@@ -38,6 +39,7 @@ from app.services.session_service import (
     SessionServiceError,
     abandon_session,
     approve_session,
+    request_next_question,
     send_user_answer,
     start_session,
 )
@@ -416,10 +418,41 @@ arithmetic, modulo
 ---END---
 """
 
+# A grading response for a correct user answer. Used in tests that
+# exercise the post-split send_user_answer flow where the LLM
+# replies with grading-only.
+GRADING_CORRECT_RESPONSE = """\
+---GRADING---
+correct
+---GRADING_EXPLANATION---
+Right. Floor division on positive integers truncates toward zero.
+---GRADING_EXPLANATION_CODE---
+NONE
+---END---
+"""
 
-async def test_send_user_answer_persists_user_and_assistant_turns(db: DbSession) -> None:
-    """Happy path: persists user and assistant turns at indexes 2 and 3."""
-    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, SECOND_TURN_RESPONSE])
+# A grading response for an incorrect user answer.
+GRADING_INCORRECT_RESPONSE = """\
+---GRADING---
+incorrect
+---GRADING_EXPLANATION---
+Not quite. 7 // 2 evaluates to 3, not 2.5. The // operator is
+integer floor division.
+---GRADING_EXPLANATION_CODE---
+NONE
+---END---
+"""
+
+
+async def test_send_user_answer_persists_user_and_grading_turns(db: DbSession) -> None:
+    """Happy path: persists user answer + grading at indexes 2 and 3.
+
+    After split, send_user_answer returns a grading response,
+    not a teaching turn. The persisted turns reflect that: USER
+    answer at index 2, GRADING at index 3 with role=GRADING and
+    mode=None (grading turns have no mode).
+    """
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, GRADING_CORRECT_RESPONSE])
     session, _ = await start_session(
         db=db,
         transport=transport,
@@ -434,8 +467,8 @@ async def test_send_user_answer_persists_user_and_assistant_turns(db: DbSession)
         answer="3",
     )
 
-    assert isinstance(parsed, ParsedTurn)
-    assert parsed.mode == LearningMode.TYPE_THE_ANSWER
+    assert isinstance(parsed, ParsedGrading)
+    assert parsed.verdict == GradingVerdict.CORRECT
 
     turns = (
         db.query(SessionTurn)
@@ -448,12 +481,15 @@ async def test_send_user_answer_persists_user_and_assistant_turns(db: DbSession)
     assert turns[2].turn_index == 2
     assert turns[2].raw_content == "3"
     assert turns[2].mode is None
-    assert turns[3].role == TurnRole.ASSISTANT
+    assert turns[3].role == TurnRole.GRADING
     assert turns[3].turn_index == 3
-    assert turns[3].mode == LearningMode.TYPE_THE_ANSWER
+    assert turns[3].mode is None
 
     db.refresh(session)
-    assert session.mode_used == LearningMode.TYPE_THE_ANSWER
+    # mode_used reflects the most recent teaching turn, which is the
+    # one from start_session (FLASHCARD). The next request_next_question
+    # call will land a teaching turn and update mode_used then.
+    assert session.mode_used == LearningMode.FLASHCARD
     assert session.claude_chat_message_count == 2
 
 
@@ -823,108 +859,6 @@ async def test_send_user_answer_below_threshold_uses_within_chat_path(db: DbSess
     assert len(turns) == 4
     transition_turns = [t for t in turns if t.role == TurnRole.TRANSITION]
     assert len(transition_turns) == 0
-
-
-async def test_send_user_answer_at_threshold_triggers_handover(db: DbSession) -> None:
-    """At threshold: handover request, new chat, 5 new turns persisted."""
-    transport = FakeTransport(
-        responses=[
-            VALID_TURN_RESPONSE,  # session start
-            HANDOVER_RESPONSE,  # dying chat's handover response
-            SECOND_TURN_RESPONSE,  # new chat's first response
-        ]
-    )
-    session, _ = await start_session(
-        db=db,
-        transport=transport,
-        transport_kind=TransportKind.DEEPSEEK,
-        topic_path="Python > Data Types > Integers",
-    )
-
-    session.claude_chat_message_count = HANDOVER_THRESHOLD
-    db.commit()
-
-    parsed = await send_user_answer(
-        db=db,
-        transport=transport,
-        session_id=session.id,
-        answer="3",
-    )
-
-    assert isinstance(parsed, ParsedTurn)
-    assert parsed.mode == LearningMode.TYPE_THE_ANSWER
-
-    turns = (
-        db.query(SessionTurn)
-        .filter(SessionTurn.session_id == session.id)
-        .order_by(SessionTurn.turn_index)
-        .all()
-    )
-    # 2 turns from start_session + 5 turns from the handover-driven send.
-    assert len(turns) == 7
-
-    # Verify the new turn shape across the transition: SYSTEM, ASSISTANT,
-    # TRANSITION, USER, ASSISTANT in that order.
-    new_turns = turns[2:]
-    assert [t.role for t in new_turns] == [
-        TurnRole.SYSTEM,
-        TurnRole.ASSISTANT,
-        TurnRole.TRANSITION,
-        TurnRole.USER,
-        TurnRole.ASSISTANT,
-    ]
-
-    transition_turn = new_turns[2]
-    assert transition_turn.parsed is not None
-    assert transition_turn.parsed["kind"] == "handover"
-    assert "---HANDOVER---" in transition_turn.raw_content
-    assert "DOMAIN_FOCUS: Python" in transition_turn.raw_content
-
-    # Three chats in total: the original from start_session, the resumed dying
-    # chat for the handover request, and the new chat opened post-handover.
-    assert len(transport.chats) == 3
-
-    # The session's chat URL and count should now reflect the new chat,
-    # not the dying one.
-    db.refresh(session)
-    assert session.claude_chat_message_count == 1
-
-
-async def test_send_user_answer_at_threshold_rolls_back_on_handover_failure(
-    db: DbSession,
-) -> None:
-    """If the handover request itself fails, no new turns persist."""
-    # raise_on_send_at=0 fails the first send() call after start_session.
-    # That first send() is the handover request. The setup leaves the
-    # session at threshold so send_user_answer takes the handover path
-    # and the failure fires there.
-    transport = FakeTransport(
-        responses=[VALID_TURN_RESPONSE],
-        raise_on_send=TransportError("simulated handover failure"),
-        raise_on_send_at=0,
-    )
-    session, _ = await start_session(
-        db=db,
-        transport=transport,
-        transport_kind=TransportKind.DEEPSEEK,
-        topic_path="Python > Data Types > Integers",
-    )
-
-    session.claude_chat_message_count = HANDOVER_THRESHOLD
-    db.commit()
-
-    turns_before = db.query(SessionTurn).count()
-
-    with pytest.raises(SessionServiceError, match="handover request"):
-        await send_user_answer(
-            db=db,
-            transport=transport,
-            session_id=session.id,
-            answer="3",
-        )
-
-    turns_after = db.query(SessionTurn).count()
-    assert turns_after == turns_before
 
 
 async def test_abandon_session_marks_state_and_persists(db: DbSession) -> None:
@@ -1312,18 +1246,213 @@ async def test_send_user_answer_tool_calls_increment_message_count(
     assert session.claude_chat_message_count == 4
 
 
-async def test_send_user_answer_unexpected_tool_call_in_handover_path(
-    db: DbSession,
-) -> None:
-    """Tool calls on the dying chat's handover response are rejected defensively.
+# ============================================================
+# request_next_question tests
+# ============================================================
 
-    Per the defensive-raise design call, the handover request path
-    does not loop through tool calls. The new error_log kind
-    session.handover.unexpected_tool_call fires.
-    """
+# A teaching response for the next-question half of the cycle.
+# Same shape as SECOND_TURN_RESPONSE but separately named for
+# clarity in tests that exercise request_next_question.
+NEXT_TURN_RESPONSE = SECOND_TURN_RESPONSE
+
+
+async def test_request_next_question_persists_continue_and_teaching_turns(db: DbSession) -> None:
+    """Happy path: continue prompt and teaching turn persist after grading."""
     transport = FakeTransport(
         responses=[
             VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+            NEXT_TURN_RESPONSE,
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    parsed = await request_next_question(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+    )
+
+    assert isinstance(parsed, ParsedTurn)
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # Turns: SYSTEM(0), ASSISTANT(1), USER(2), GRADING(3), USER(4), ASSISTANT(5)
+    assert len(turns) == 6
+    assert turns[4].role == TurnRole.USER
+    assert "Continue with the next teaching turn" in turns[4].raw_content
+    assert turns[5].role == TurnRole.ASSISTANT
+    assert turns[5].mode == parsed.mode
+
+
+async def test_request_next_question_rejects_unknown_session(db: DbSession) -> None:
+    transport = FakeTransport(responses=[])
+    with pytest.raises(SessionServiceError, match="not found"):
+        await request_next_question(
+            db=db,
+            transport=transport,
+            session_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
+async def test_request_next_question_rejects_non_in_progress_session(db: DbSession) -> None:
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    session.state = SessionState.COMPLETED
+    db.commit()
+
+    with pytest.raises(SessionServiceError, match="expected in_progress"):
+        await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+        )
+
+
+async def test_request_next_question_rejects_when_last_turn_is_not_grading(db: DbSession) -> None:
+    """Cannot continue when the last turn is a teaching turn (mid-cycle would be wrong shape).
+
+    State guard: request_next_question expects the session to be in
+    the post-grading position. If the last turn is ASSISTANT
+    (teaching) instead of GRADING, the caller is out of sequence.
+    """
+    transport = FakeTransport(responses=[VALID_TURN_RESPONSE])
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    # Session right after start_session has SYSTEM(0) and ASSISTANT(1).
+    # No user answer or grading yet. request_next_question should reject.
+
+    with pytest.raises(SessionServiceError, match="not awaiting a continue"):
+        await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+        )
+
+
+async def test_request_next_question_at_threshold_triggers_handover(db: DbSession) -> None:
+    """At threshold: handover request, new chat, 5 transition turns persisted."""
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+            HANDOVER_RESPONSE,  # dying chat's handover
+            NEXT_TURN_RESPONSE,  # new chat's first response (a teaching turn)
+        ]
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    session.claude_chat_message_count = HANDOVER_THRESHOLD
+    db.commit()
+
+    parsed = await request_next_question(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+    )
+
+    assert isinstance(parsed, ParsedTurn)
+
+    turns = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index)
+        .all()
+    )
+    # Turns: SYSTEM(0), ASSISTANT(1), USER(2), GRADING(3), then 5
+    # transition turns from the handover: SYSTEM(4), ASSISTANT(5),
+    # TRANSITION(6), USER(7), ASSISTANT(8).
+    assert len(turns) == 9
+    assert turns[4].role == TurnRole.SYSTEM
+    assert turns[5].role == TurnRole.ASSISTANT
+    assert turns[6].role == TurnRole.TRANSITION
+    assert turns[7].role == TurnRole.USER
+    assert "Continue with the next teaching turn" in turns[7].raw_content
+    assert turns[8].role == TurnRole.ASSISTANT
+
+
+async def test_request_next_question_at_threshold_rolls_back_on_handover_failure(
+    db: DbSession,
+) -> None:
+    """If the handover request itself fails, no new turns persist."""
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+        ],
+        raise_on_send=TransportError("simulated handover failure"),
+        raise_on_send_at=1,
+    )
+    session, _ = await start_session(
+        db=db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        topic_path="Python > Data Types > Integers",
+    )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
+    session.claude_chat_message_count = HANDOVER_THRESHOLD
+    db.commit()
+
+    turns_before = db.query(SessionTurn).count()
+
+    with pytest.raises(SessionServiceError, match="handover request"):
+        await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+        )
+
+    turns_after = db.query(SessionTurn).count()
+    assert turns_after == turns_before
+
+
+async def test_request_next_question_unexpected_tool_call_in_handover_path(db: DbSession) -> None:
+    """Tool calls on the dying chat's handover response are rejected defensively."""
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
             _list_domains_tool_call_response(),  # dying chat returns tool call instead of handover
         ]
     )
@@ -1333,20 +1462,19 @@ async def test_send_user_answer_unexpected_tool_call_in_handover_path(
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
+
     session.claude_chat_message_count = HANDOVER_THRESHOLD
     db.commit()
 
     with pytest.raises(SessionServiceError, match="Unexpected tool call in handover"):
-        await send_user_answer(
+        await request_next_question(
             db=db,
             transport=transport,
             session_id=session.id,
-            answer="3",
         )
-
-    # error_log captures the rejection
-    error_logs = (
-        db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.unexpected_tool_call").all()
-    )
-    assert len(error_logs) == 1
-    assert error_logs[0].session_id == session.id

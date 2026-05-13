@@ -3,8 +3,8 @@
 Orchestrates the lifecycle of a learning session: opening a chat
 on a transport, sending prompts, parsing responses, persisting
 turns, and minting learned items on approval. The service is the
-only layer that knows about both the transport and the database;
-transports do not write to the DB and DB models do not call
+only layer that knows about both the transport and the database.
+Transports do not write to the DB and DB models do not call
 transports.
 
 Covers session start, follow-up turns within the same chat, and
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.models import (
     ErrorLog,
+    GradingVerdict,
     LearnedItem,
     LearnedItemStatus,
     Session,
@@ -32,8 +33,9 @@ from app.models import (
 from app.prompts.first_prompt import build_first_prompt
 from app.prompts.handover_prompt import build_handover_request
 from app.prompts.intro import build_intro
-from app.prompts.turn_prompt import build_turn_prompt
+from app.prompts.turn_prompt import build_continue_prompt, build_turn_prompt
 from app.schemas.parsed_response import (
+    ParsedGrading,
     ParsedHandover,
     ParsedResponse,
     ParsedToolCall,
@@ -232,20 +234,18 @@ async def send_user_answer(
     session_id: str,
     answer: str,
 ) -> ParsedResponse:
-    """Send the user's answer in an in-progress session and parse the reply.
+    """Send the user's answer and parse the resulting grading response.
 
     Resumes the LLM chat from persisted session state, sends the
     user's answer, parses the response, and persists the new turns
-    in one transaction. Returns the parsed response so the caller can
-    branch on its kind: a ParsedTurn means continue the session, a
-    ParsedSessionEnd means the LLM proposes wrapping up, and a
-    ParsedHandover means the chat itself emitted a handover block.
+    in one transaction. Returns the parsed response. In the normal
+    flow the kind is "grading" (a ParsedGrading). The LLM may also
+    propose session end (ParsedSessionEnd) or emit a handover block
+    spontaneously (ParsedHandover). Callers branch accordingly.
 
-    When the session's chat is at or past HANDOVER_THRESHOLD, this
-    call splits the chat: the dying chat produces a handover, a
-    fresh chat opens with that handover seeded into its intro, and
-    the user's answer goes through the new chat. The session row
-    stays the same and turns persist in unbroken turn_index order.
+    Handover does not fire from this function. The split-roundtrip
+    flow puts handover at the start of request_next_question so the
+    extra round trip overlaps with the user's grading-read time
 
     The session must be in IN_PROGRESS state. Either all new turns
     are written or none are.
@@ -258,9 +258,146 @@ async def send_user_answer(
             f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
         )
 
-    if session.claude_chat_message_count >= HANDOVER_THRESHOLD:
-        return await _send_with_handover(db=db, transport=transport, session=session, answer=answer)
     return await _send_within_chat(db=db, transport=transport, session=session, answer=answer)
+
+
+async def request_next_question(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    session_id: str,
+) -> ParsedResponse:
+    """Send the continue prompt and parse the resulting teaching turn.
+
+    Called after the user has read the grading response and signaled
+    Continue (or the frontend prefetched). The continue prompt is
+    service-generated, no user input is part of this call.
+
+    This is where handover lives in the split-roundtrip flow.
+    The check happens at the start of the function: if the chat is
+    close to threshold, the dying chat produces a handover block and
+    the continue prompt goes through a freshly opened chat. The
+    extra round trip overlaps with the user's grading-read time,
+    which is the cleanest place to absorb the cost.
+
+    Validates that the session is IN_PROGRESS and that the most
+    recent turn is a GRADING turn (we expect to be in the middle of
+    a cycle, not at its boundary). Returns the parsed response,
+    normally a ParsedTurn. Either all new turns are written or none
+    are.
+    """
+    session = db.get(Session, session_id)
+    if session is None:
+        raise SessionServiceError(f"Session {session_id!r} not found.")
+    if session.state is not SessionState.IN_PROGRESS:
+        raise SessionServiceError(
+            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
+        )
+
+    last_turn = (
+        db.query(SessionTurn)
+        .filter(SessionTurn.session_id == session.id)
+        .order_by(SessionTurn.turn_index.desc())
+        .first()
+    )
+    if last_turn is None or last_turn.role is not TurnRole.GRADING:
+        raise SessionServiceError(
+            f"Session {session_id!r} is not awaiting a continue prompt; "
+            f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
+            "expected 'grading'.",
+        )
+
+    if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
+        return await _continue_with_handover(db=db, transport=transport, session=session)
+    return await _continue_within_chat(db=db, transport=transport, session=session)
+
+
+async def _continue_within_chat(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    session: Session,
+) -> ParsedResponse:
+    """Send the continue prompt inside the existing chat.
+
+    Mirror of _send_within_chat for the second half of the cycle.
+    Persists USER (continue prompt) + ASSISTANT (teaching turn).
+    """
+    metadata = _rebuild_chat_metadata(session)
+    next_index = _next_turn_index(db, session.id)
+    prompt = build_continue_prompt()
+
+    try:
+        chat = await transport.resume_chat(metadata)
+        response = await transport.send(chat, prompt)
+    except TransportError as e:
+        _log_service_error(
+            db,
+            kind="session.continue.transport_failed",
+            message=e.message,
+            session_id=session.id,
+            context={"transport_kind": session.transport_kind.value},
+        )
+        db.rollback()
+        raise SessionServiceError(
+            f"Transport failed during request_next_question: {e.message}", cause=e
+        ) from e
+
+    try:
+        parsed = _response_to_parsed(response)
+    except Exception as e:
+        _log_service_error(
+            db,
+            kind="session.continue.parse_failed",
+            message=str(e),
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "raw_response": response.text,
+            },
+        )
+        db.rollback()
+        raise SessionServiceError("Parse failed on continue-prompt response.", cause=e) from e
+
+    user_turn = SessionTurn(
+        session_id=session.id,
+        turn_index=next_index,
+        role=TurnRole.USER,
+        raw_content=prompt,
+        parsed=None,
+        mode=None,
+    )
+    db.add(user_turn)
+    db.flush()
+
+    response, parsed, after_tools_index = await _execute_until_terminal(
+        db=db,
+        transport=transport,
+        chat=chat,
+        response=response,
+        parsed=parsed,
+        session_id=session.id,
+        transport_kind=session.transport_kind,
+        base_turn_index=next_index + 1,
+    )
+
+    assistant_turn = SessionTurn(
+        session_id=session.id,
+        turn_index=after_tools_index,
+        role=TurnRole.ASSISTANT,
+        raw_content=response.text,
+        parsed=parsed.model_dump(mode="json"),
+        mode=parsed.mode if isinstance(parsed, ParsedTurn) else None,
+    )
+    db.add(assistant_turn)
+
+    session.claude_chat_message_count = getattr(chat, "message_count", 0)
+    if isinstance(parsed, ParsedTurn):
+        session.mode_used = parsed.mode
+
+    db.commit()
+    db.refresh(session)
+    return parsed
 
 
 async def _send_within_chat(
@@ -270,10 +407,13 @@ async def _send_within_chat(
     session: Session,
     answer: str,
 ) -> ParsedResponse:
-    """Send the user's answer inside the existing chat.
+    """Send the user's answer and persist the resulting grading turn.
 
-    The default path: chat has budget remaining, resume it, send
-    one turn, parse, persist user + assistant turns.
+    The default path under the split-roundtrip flow: chat has budget
+    remaining, resume it, send the user's answer, parse the grading
+    response, persist USER + GRADING turns. The response is normally
+    a ParsedGrading. ParsedSessionEnd and ParsedHandover are also
+    accepted as terminal kinds.
     """
     metadata = _rebuild_chat_metadata(session)
     next_index = _next_turn_index(db, session.id)
@@ -335,38 +475,45 @@ async def _send_within_chat(
         base_turn_index=next_index + 1,
     )
 
-    assistant_turn = SessionTurn(
+    # After the split, the expected response is ParsedGrading.
+    # The turn lands with role=GRADING. SessionEnd and Handover
+    # land as ASSISTANT-role for backward compatibility with the
+    # admin CLI's role-based filtering.
+    response_role = TurnRole.GRADING if isinstance(parsed, ParsedGrading) else TurnRole.ASSISTANT
+    response_turn = SessionTurn(
         session_id=session.id,
         turn_index=after_tools_index,
-        role=TurnRole.ASSISTANT,
+        role=response_role,
         raw_content=response.text,
         parsed=parsed.model_dump(mode="json"),
-        mode=parsed.mode if isinstance(parsed, ParsedTurn) else None,
+        mode=None,
     )
-    db.add(assistant_turn)
+    db.add(response_turn)
 
     session.claude_chat_message_count = getattr(chat, "message_count", 0)
-    if isinstance(parsed, ParsedTurn):
-        session.mode_used = parsed.mode
 
     db.commit()
     db.refresh(session)
     return parsed
 
 
-async def _send_with_handover(
+async def _continue_with_handover(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
     session: Session,
-    answer: str,
 ) -> ParsedResponse:
-    """Split the chat: handover the dying chat, open a new one, deliver the answer there.
+    """Split the chat at the continue-prompt boundary.
 
+    Called from request_next_question when threshold is reached.
     Five turns persist on success: SYSTEM (handover request prompt),
     ASSISTANT (handover response from dying chat), TRANSITION (the
-    standard handover block carried over), USER (the user's answer
-    in the new chat), ASSISTANT (the LLM's response in the new chat).
+    standard handover block carried over), USER (the continue prompt
+    sent in the new chat), ASSISTANT (the new chat's teaching turn).
+
+    The new chat's first response is the next teaching turn, not a
+    grading response, because the continue prompt is what triggers
+    the new chat. This matches the natural flow of request_next_question.
 
     Any failure rolls back the entire transition. The caller sees a
     SessionServiceError and the session row and prior turns are
@@ -374,11 +521,12 @@ async def _send_with_handover(
     """
     handover_block = await _request_and_parse_handover(db=db, transport=transport, session=session)
     new_chat, new_response, new_parsed = await _open_new_chat_with_handover(
-        db=db, transport=transport, session=session, handover=handover_block, answer=answer
+        db=db, transport=transport, session=session, handover=handover_block
     )
 
     next_index = _next_turn_index(db, session.id)
     handover_request_text = build_handover_request()
+    continue_prompt = build_continue_prompt()
 
     db.add(
         SessionTurn(
@@ -415,7 +563,7 @@ async def _send_with_handover(
             session_id=session.id,
             turn_index=next_index + 3,
             role=TurnRole.USER,
-            raw_content=answer,
+            raw_content=continue_prompt,
             parsed=None,
             mode=None,
         )
@@ -427,13 +575,14 @@ async def _send_with_handover(
             role=TurnRole.ASSISTANT,
             raw_content=new_response.text,
             parsed=new_parsed.model_dump(mode="json"),
-            mode=new_parsed.mode,
+            mode=new_parsed.mode if isinstance(new_parsed, ParsedTurn) else None,
         )
     )
 
     session.claude_chat_url = getattr(new_chat, "chat_url", None)
     session.claude_chat_message_count = getattr(new_chat, "message_count", 0)
-    session.mode_used = new_parsed.mode
+    if isinstance(new_parsed, ParsedTurn):
+        session.mode_used = new_parsed.mode
 
     db.commit()
     db.refresh(session)
@@ -530,20 +679,21 @@ async def _open_new_chat_with_handover(
     transport: LLMTransport[Any],
     session: Session,
     handover: ParsedHandover,
-    answer: str,
 ) -> tuple[Any, Any, ParsedTurn]:
     """Open a fresh chat with the handover seeded into its intro.
 
-    The new chat sees the original intro, the handover block, and
-    the user's answer as its first message. The response must be a
-    ParsedTurn; the new chat shouldn't propose session end on its
-    very first reply.
+    The new chat sees the original intro and the handover block, and
+    the service-generated continue prompt as its first message. The
+    response must be a ParsedTurn. The new chat shouldn't propose
+    session end on its very first reply, and after the split-roundtrip
+    work it shouldn't emit a grading response either (no prior answer
+    to grade in this new chat's context).
 
     Returns the new chat handle, the raw response, and the parsed
     teaching turn.
     """
     combined_intro = f"{await build_intro(db)}\n\n---\n\n{_render_handover_block(handover)}"
-    first_message = build_turn_prompt(answer)
+    first_message = build_continue_prompt()
 
     try:
         new_chat, new_response = await transport.start_new_chat(combined_intro, first_message)
@@ -578,12 +728,6 @@ async def _open_new_chat_with_handover(
             "Parse failed on new chat's first response after handover.", cause=e
         ) from e
 
-    # Tool calls on a new chat's very first reply land between
-    # TRANSITION and the new chat's first USER turn in the natural
-    # flow, but _send_with_handover persists all 5 transition turns
-    # in one block after this function returns. Mixing helper-written
-    # tool turns into that ordering needs a real refactor. Reject
-    # defensively until real data shows this path matters.
     if isinstance(parsed, ParsedToolCall):
         _log_service_error(
             db,
@@ -647,7 +791,7 @@ def _handover_response_marker(handover: ParsedHandover) -> str:
     raw_content gets a short human-readable summary so admin CLI
     output and grep stay useful without dumping the whole block.
     """
-    return f"[handover requested by service; structured fields in parsed]\n{handover.last_question}"
+    return f"[handover requested by service, structured fields in parsed]\n{handover.last_question}"
 
 
 def _response_to_parsed(response: TransportResponse) -> ParsedResponse:
@@ -933,16 +1077,28 @@ def _build_assistant_turn(
 
 # Placeholder stored in learned_item.answer when the LLM graded the
 # turn conversationally (EXPECTED_ANSWER was OPEN). The column is
-# non-nullable; this preserves the item with a clear marker rather
+# non-nullable. This preserves the item with a clear marker rather
 # than dropping it or storing an empty string.
 OPEN_ANSWER_PLACEHOLDER = "[graded conversationally]"
 
 
-# Maximum user-turn count per LLM chat before the next send_user_answer
-# call triggers a chat transition. Conservative for claude.ai's free-plan
-# limit. DeepSeek has no real cap but a long history bloats every request
-# payload. Tuned empirically as real session data accumulates.
-HANDOVER_THRESHOLD = 30
+# Maximum message count per LLM chat before request_next_question
+# triggers a chat transition. Each teaching cycle is 4 messages
+# under the split-roundtrip flow (user answer, grading response,
+# continue prompt, teaching turn). Raised from 30 to 60 to
+# compensate for the doubled message density per teaching turn.
+# Tuned empirically as real session data accumulates.
+HANDOVER_THRESHOLD = 60
+
+
+# Look-ahead cost used by request_next_question's threshold check.
+# Counts the remaining cost of this call (continue prompt + teaching
+# response = 2) plus the first half of the next cycle (user answer +
+# grading = 2). If current + 4 would push us past threshold, handover
+# now so the next cycle starts in a fresh chat. Tool calls within a
+# cycle may push the actual count past threshold. Soft overshoot is
+# accepted because the threshold itself is conservative.
+ESTIMATED_LOOKAHEAD_COST = 4
 
 
 async def approve_session(*, db: DbSession, session_id: str) -> Session:
@@ -985,9 +1141,11 @@ def _build_learned_items(db: DbSession, session: Session, now: datetime) -> list
     """Build one LearnedItem per teaching turn that has a user answer.
 
     Pairs each ASSISTANT turn whose parsed payload is a teaching
-    turn with the immediately following USER turn. Teaching turns
-    without a user answer (e.g. an unanswered final question
-    before SESSION_END_PROPOSAL) are skipped.
+    turn with the immediately following USER turn (the user's
+    answer). Teaching turns without a user answer (e.g. an
+    unanswered final question before SESSION_END_PROPOSAL) are
+    skipped. After split, a GRADING turn follows each user answer.
+    If present, its verdict is copied onto the minted LearnedItem.
     """
     turns = sorted(session.turns, key=lambda t: t.turn_index)
     items: list[LearnedItem] = []
@@ -1002,18 +1160,55 @@ def _build_learned_items(db: DbSession, session: Session, now: datetime) -> list
         if next_turn is None or next_turn.role is not TurnRole.USER:
             continue
 
-        items.append(_build_learned_item(db, turn, next_turn, now))
+        # The grading turn (if present) follows the user's answer in
+        # the split-roundtrip flow. Historical pre-split sessions
+        # have no grading turn here, verdict stays None for those.
+        grading_turn = turns[i + 2] if i + 2 < len(turns) else None
+        verdict = _extract_grading_verdict(grading_turn)
+
+        items.append(_build_learned_item(db, turn, next_turn, verdict, now))
 
     return items
+
+
+def _extract_grading_verdict(grading_turn: SessionTurn | None) -> GradingVerdict | None:
+    """Return the verdict on a GRADING turn, or None if absent.
+
+    Returns None when:
+      - There is no grading_turn (last cycle truncated, historical
+        session, etc.)
+      - The turn is present but not a GRADING role (transition
+        marker, tool turn, or something else)
+      - The parsed payload is missing or shaped unexpectedly
+    """
+    if grading_turn is None:
+        return None
+    if grading_turn.role is not TurnRole.GRADING:
+        return None
+    if grading_turn.parsed is None:
+        return None
+    verdict_value = grading_turn.parsed.get("verdict")
+    if verdict_value is None:
+        return None
+    try:
+        return GradingVerdict(verdict_value)
+    except ValueError:
+        return None
 
 
 def _build_learned_item(
     db: DbSession,
     assistant_turn: SessionTurn,
     user_turn: SessionTurn,
+    grading_verdict: GradingVerdict | None,
     now: datetime,
 ) -> LearnedItem:
-    """Build one LearnedItem from a (ParsedTurn, user-answer) pair."""
+    """Build one LearnedItem from a (ParsedTurn, user-answer) pair.
+
+    grading_verdict is the verdict from the GRADING turn following
+    the user-answer, or None if no GRADING turn is available (pre-
+    split session data, truncated cycles, etc.).
+    """
     parsed = ParsedTurn.model_validate(assistant_turn.parsed)
     topic = get_or_create_topic(db, parsed.topic_path)
 
@@ -1027,6 +1222,7 @@ def _build_learned_item(
         your_answer=user_turn.raw_content,
         mode=parsed.mode,
         difficulty=parsed.difficulty,
+        grading_verdict=grading_verdict,
         status=LearnedItemStatus.LEARNED,
         last_reviewed_at=now,
     )

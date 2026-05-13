@@ -90,6 +90,7 @@ class TestIntroContent:
 
     async def test_required_section_headers_present(self, empty_intro: str) -> None:
         for header in (
+            "TURN FLOW",
             "OUTPUT FORMAT",
             "LEARNING MODES",
             "GRADING VERDICTS",
@@ -101,21 +102,30 @@ class TestIntroContent:
         ):
             assert header in empty_intro
 
-    async def test_turn_format_delimiters_present(self, empty_intro: str) -> None:
+    async def test_teaching_turn_delimiters_present(self, empty_intro: str) -> None:
+        # The teaching turn block, post-split, has these fields. The
+        # GRADING fields moved to the standalone grading response.
         for delimiter in (
             "---TOPIC---",
             "---DIFFICULTY---",
             "---PREREQUISITES---",
             "---MODE---",
-            "---GRADING---",
-            "---GRADING_EXPLANATION---",
-            "---GRADING_EXPLANATION_CODE---",
             "---QUESTION---",
             "---QUESTION_CODE---",
             "---EXPECTED_ANSWER---",
             "---REQUIREMENTS---",
             "---FOLLOWUP---",
             "---TAGS---",
+            "---END---",
+        ):
+            assert delimiter in empty_intro
+
+    async def test_grading_response_delimiters_present(self, empty_intro: str) -> None:
+        # The standalone grading response block, post-split.
+        for delimiter in (
+            "---GRADING---",
+            "---GRADING_EXPLANATION---",
+            "---GRADING_EXPLANATION_CODE---",
             "---END---",
         ):
             assert delimiter in empty_intro

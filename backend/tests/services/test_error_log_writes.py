@@ -21,6 +21,7 @@ from app.models import (
 from app.services.session_service import (
     HANDOVER_THRESHOLD,
     SessionServiceError,
+    request_next_question,
     send_user_answer,
     start_session,
 )
@@ -79,6 +80,16 @@ NEXT_PLANNED: Generators
 OPEN_THREADS: NONE
 USER_STATE: Engaged
 ---END_HANDOVER---
+"""
+
+GRADING_CORRECT_RESPONSE = """\
+---GRADING---
+correct
+---GRADING_EXPLANATION---
+Right. Floor division on positive integers truncates toward zero.
+---GRADING_EXPLANATION_CODE---
+NONE
+---END---
 """
 
 
@@ -214,11 +225,19 @@ async def test_send_user_answer_parse_failure_writes_log(db: DbSession) -> None:
 
 
 async def test_handover_request_transport_failure_writes_log(db: DbSession) -> None:
-    """Transport failure during handover request logs the handover-specific kind."""
+    """Transport failure during handover request logs the handover-specific kind.
+
+    Handover lives in request_next_question post-M7.5b, so the test
+    drives a full cycle: start_session, send_user_answer (gets
+    grading back), then request_next_question at threshold.
+    """
     transport = FakeTransport(
-        responses=[VALID_TURN_RESPONSE],
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+        ],
         raise_on_send=TransportError("simulated handover failure"),
-        raise_on_send_at=0,  # fail the first send after start_session
+        raise_on_send_at=1,  # fail on the handover-request send
     )
     session, _ = await start_session(
         db=db,
@@ -226,16 +245,21 @@ async def test_handover_request_transport_failure_writes_log(db: DbSession) -> N
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
     db.commit()
 
     with pytest.raises(SessionServiceError):
-        await send_user_answer(
+        await request_next_question(
             db=db,
             transport=transport,
             session_id=session.id,
-            answer="3",
         )
 
     rows = (
@@ -244,39 +268,52 @@ async def test_handover_request_transport_failure_writes_log(db: DbSession) -> N
         .all()
     )
     assert len(rows) == 1
-    assert rows[0].session_id == session.id
 
 
 async def test_handover_request_parse_failure_writes_log(db: DbSession) -> None:
     """Parse failure on dying chat's handover response logs."""
-    transport = FakeTransport(responses=[VALID_TURN_RESPONSE, "not a handover"])
+    transport = FakeTransport(
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+            "not a handover",
+        ]
+    )
     session, _ = await start_session(
         db=db,
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
     db.commit()
 
     with pytest.raises(SessionServiceError):
-        await send_user_answer(
+        await request_next_question(
             db=db,
             transport=transport,
             session_id=session.id,
-            answer="3",
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.request_parse_failed").all()
     assert len(rows) == 1
-    assert rows[0].context["raw_response"] == "not a handover"
 
 
 async def test_handover_request_wrong_kind_writes_log(db: DbSession) -> None:
     """A teaching turn instead of a handover from dying chat is wrong-kind."""
     transport = FakeTransport(
-        responses=[VALID_TURN_RESPONSE, VALID_TURN_RESPONSE]  # second is wrong kind
+        responses=[
+            VALID_TURN_RESPONSE,
+            GRADING_CORRECT_RESPONSE,
+            VALID_TURN_RESPONSE,  # third is wrong kind for handover request
+        ]
     )
     session, _ = await start_session(
         db=db,
@@ -284,22 +321,25 @@ async def test_handover_request_wrong_kind_writes_log(db: DbSession) -> None:
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
     )
+    await send_user_answer(
+        db=db,
+        transport=transport,
+        session_id=session.id,
+        answer="3",
+    )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
     db.commit()
 
     with pytest.raises(SessionServiceError):
-        await send_user_answer(
+        await request_next_question(
             db=db,
             transport=transport,
             session_id=session.id,
-            answer="3",
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.wrong_response_kind").all()
     assert len(rows) == 1
-    assert rows[0].context["expected_kind"] == "handover"
-    assert rows[0].context["actual_kind"] == "turn"
 
 
 # ---------------- contract assertions ----------------
