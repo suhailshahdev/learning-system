@@ -40,20 +40,20 @@ class ParsedTurn(BaseModel):
     """A regular teaching turn.
 
     The wire format includes TOPIC, DIFFICULTY, PREREQUISITES, MODE,
-    GRADING, GRADING_EXPLANATION, GRADING_EXPLANATION_CODE, QUESTION,
-    QUESTION_CODE, EXPECTED_ANSWER, REQUIREMENTS, FOLLOWUP, and TAGS.
+    QUESTION, QUESTION_CODE, EXPECTED_ANSWER, REQUIREMENTS, FOLLOWUP,
+    and TAGS. Grading lives on its own standalone ParsedGrading
+    response: a teaching turn never carries grading fields after the
+    split-roundtrip flow.
 
-    Several fields use sentinels for absence. GRADING and
-    GRADING_EXPLANATION are NONE on the first turn since there is no
-    previous answer. EXPECTED_ANSWER can be OPEN for free-form modes.
-    REQUIREMENTS, FOLLOWUP, and the two CODE fields can be NONE. The
-    parser converts all sentinels to None so consumers never branch
-    on strings.
+    Several fields use sentinels for absence. EXPECTED_ANSWER can be
+    OPEN for free-form modes. REQUIREMENTS, FOLLOWUP, and QUESTION_CODE
+    can be NONE. The parser converts sentinels to None so consumers
+    never branch on strings.
 
     Code blocks are split out of the prose fields so the frontend can
     render them with a monospace font and language label. Inline code
     stays in the prose with backticks and only block-level code uses
-    the CODE fields.
+    the CODE field.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -63,9 +63,6 @@ class ParsedTurn(BaseModel):
     difficulty: Difficulty
     prerequisites: list[Prerequisite] = Field(default_factory=list)
     mode: LearningMode
-    grading_verdict: GradingVerdict | None = None
-    grading_explanation: str | None = None
-    grading_explanation_code: CodeBlock | None = None
     question: str = Field(min_length=1)
     question_code: CodeBlock | None = None
     expected_answer: str | None = None

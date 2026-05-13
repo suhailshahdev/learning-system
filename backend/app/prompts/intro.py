@@ -316,6 +316,16 @@ RULES
 - Always emit the closing ---END--- (or ---END_HANDOVER---).
 - Never include text before the first delimiter or after the
   closing one.
+- Every field marker shown in the format spec above must appear in
+  your response in the order shown. Do not omit a marker because
+  its content is NONE; write the marker with NONE on the next line
+  instead. The parser checks for all markers and rejects partial
+  responses.
+- When the user's message is exactly "Continue with the next
+  teaching turn." (the system-generated continue prompt), reply
+  with a teaching turn directly. Do not call tools in this
+  response. Any reads you need for picking the next question were
+  available at session start or at the last tool-using turn.
 """
 
 

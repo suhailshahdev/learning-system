@@ -42,12 +42,6 @@ beginner
 NONE
 ---MODE---
 flashcard
----GRADING---
-NONE
----GRADING_EXPLANATION---
-NONE
----GRADING_EXPLANATION_CODE---
-NONE
 ---QUESTION---
 What is 7 // 2?
 ---QUESTION_CODE---

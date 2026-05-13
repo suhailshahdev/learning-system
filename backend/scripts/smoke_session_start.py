@@ -34,9 +34,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.models import LearnedItem, TransportKind
+from app.schemas.parsed_response import ParsedGrading, ParsedTurn
 from app.services.session_service import (
     SessionServiceError,
     approve_session,
+    request_next_question,
     send_user_answer,
     start_session,
 )
@@ -84,18 +86,43 @@ async def smoke_one(
         )
         print(f"  [send] answer={followup_answer[:60]!r}")
 
-        next_parsed = await send_user_answer(
+        grading = await send_user_answer(
             db=db,
             transport=transport,
             session_id=session.id,
             answer=followup_answer,
         )
 
-        print(f"  [send] parsed.kind={next_parsed.kind}")
-        if hasattr(next_parsed, "question"):
-            print(f"  [send] parsed.question={next_parsed.question[:100]!r}")
+        # After the split, send_user_answer returns a grading response.
+        # This is the wire-format contract the LLM has to honor.
+        if not isinstance(grading, ParsedGrading):
+            raise RuntimeError(
+                f"Expected ParsedGrading from send_user_answer, got {grading.kind!r}.",
+            )
+
+        print(f"  [send] grading.verdict={grading.verdict.value}")
+        print(f"  [send] grading.explanation={grading.explanation[:100]!r}")
         db.refresh(session)
         print(f"  [send] session.message_count={session.claude_chat_message_count}")
+
+        # Continue past the grading to the next teaching turn. Mirrors
+        # the frontend prefetch path: as soon as grading lands, the
+        # next-question round trip fires.
+        next_turn = await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+        )
+
+        if not isinstance(next_turn, ParsedTurn):
+            raise RuntimeError(
+                f"Expected ParsedTurn from request_next_question, got {next_turn.kind!r}.",
+            )
+
+        print(f"  [continue] next_turn.mode={next_turn.mode.value}")
+        print(f"  [continue] next_turn.question={next_turn.question[:100]!r}")
+        db.refresh(session)
+        print(f"  [continue] session.message_count={session.claude_chat_message_count}")
 
         completed = await approve_session(db=db, session_id=session.id)
         items = (
@@ -106,9 +133,25 @@ async def smoke_one(
         )
         print(f"  [approve] session.state={completed.state.value}")
         print(f"  [approve] learned_items={len(items)}")
+
+        # The first question and answer pair should carry the grading
+        # verdict from the GRADING turn that followed the answer. This is
+        # the falsifying check for the learned items work against real LLM
+        # data. Unit tests verified the mechanism but only the smoke
+        # confirms the LLM returns a valid verdict through the wire format.
+        if len(items) < 1:
+            raise RuntimeError("Expected at least one learned_item after approve.")
+        first_item = items[0]
+        if first_item.grading_verdict is None:
+            raise RuntimeError(
+                "Expected grading_verdict populated on first learned_item, got None.",
+            )
+        print(f"  [approve] first_item.grading_verdict={first_item.grading_verdict.value}")
+
         for item in items:
             your_answer = item.your_answer or ""
-            print(f"  [approve]   - {item.question[:60]!r} -> {your_answer[:40]!r}")
+            verdict = item.grading_verdict.value if item.grading_verdict else "none"
+            print(f"  [approve]   - {item.question[:60]!r} -> {your_answer[:40]!r} [{verdict}]")
         print(f"  [{name}] passed.\n")
 
 

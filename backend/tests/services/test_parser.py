@@ -36,12 +36,6 @@ beginner
 Python > Basics:beginner, Python > Variables:beginner
 ---MODE---
 flashcard
----GRADING---
-correct
----GRADING_EXPLANATION---
-Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.
----GRADING_EXPLANATION_CODE---
-NONE
 ---QUESTION---
 What is the result of 7 // 2 in Python 3?
 ---QUESTION_CODE---
@@ -69,12 +63,6 @@ intermediate
 NONE
 ---MODE---
 socratic
----GRADING---
-NONE
----GRADING_EXPLANATION---
-NONE
----GRADING_EXPLANATION_CODE---
-NONE
 ---QUESTION---
 Walk me through what a decorator does conceptually.
 ---QUESTION_CODE---
@@ -102,17 +90,6 @@ beginner
 NONE
 ---MODE---
 type_the_answer
----GRADING---
-partial
----GRADING_EXPLANATION---
-Close, but the loop body multiplies by 2, not adds 2. Trace it again
-with i = 0, 1, 2.
----GRADING_EXPLANATION_CODE---
-python
-# What the loop actually does, step by step:
-print(0 * 2)  # 0
-print(1 * 2)  # 2
-print(2 * 2)  # 4
 ---QUESTION---
 What does this script print? One number per line.
 ---QUESTION_CODE---
@@ -233,9 +210,6 @@ class TestParseTurn:
         assert result.topic_path == "Python > Data Types > Integers"
         assert result.difficulty == Difficulty.BEGINNER
         assert result.mode == LearningMode.FLASHCARD
-        assert result.grading_verdict == GradingVerdict.CORRECT
-        assert result.grading_explanation is not None
-        assert "Floor division" in result.grading_explanation
         assert result.question == "What is the result of 7 // 2 in Python 3?"
         assert result.expected_answer == "3"
         assert result.requirements == "Python 3.12+"
@@ -249,16 +223,13 @@ class TestParseTurn:
         result = parse_response(TURN_SENTINELS)
         assert isinstance(result, ParsedTurn)
         assert result.prerequisites == []
-        assert result.grading_verdict is None
-        assert result.grading_explanation is None
-        assert result.grading_explanation_code is None
         assert result.expected_answer is None
         assert result.requirements is None
         assert result.followup is None
         assert result.question_code is None
         assert result.tags == []
 
-    def test_code_blocks_parse_into_code_block_models(self) -> None:
+    def test_code_block_parses_into_code_block_model(self) -> None:
         result = parse_response(TURN_WITH_CODE)
         assert isinstance(result, ParsedTurn)
 
@@ -266,16 +237,11 @@ class TestParseTurn:
         assert result.question_code.language == "python"
         assert result.question_code.body == "for i in range(3):\n    print(i * 2)"
 
-        assert result.grading_explanation_code is not None
-        assert result.grading_explanation_code.language == "python"
-        assert "print(0 * 2)" in result.grading_explanation_code.body
-
     def test_code_block_with_none_sentinel_becomes_none(self) -> None:
-        # TURN_FULL has both code blocks set to NONE.
+        # TURN_FULL has its code block set to NONE.
         result = parse_response(TURN_FULL)
         assert isinstance(result, ParsedTurn)
         assert result.question_code is None
-        assert result.grading_explanation_code is None
 
 
 class TestParseSessionEnd:
@@ -391,22 +357,6 @@ class TestParseErrors:
     def test_invalid_mode_raises(self) -> None:
         text = TURN_FULL.replace("flashcard", "telepathy")
         with pytest.raises(ParseError, match="Invalid MODE"):
-            parse_response(text)
-
-    def test_invalid_grading_verdict_raises(self) -> None:
-        text = TURN_FULL.replace("---GRADING---\ncorrect", "---GRADING---\nbrilliant")
-        with pytest.raises(ParseError, match="Invalid GRADING"):
-            parse_response(text)
-
-    def test_grading_field_missing_raises(self) -> None:
-        # Drop both grading blocks entirely - the parser should detect
-        # the missing fields rather than silently allowing the older format.
-        text = TURN_FULL.replace(
-            "---GRADING---\ncorrect\n---GRADING_EXPLANATION---\n"
-            "Right. Floor division rounds toward negative infinity, so 7 // 2 is 3.\n",
-            "",
-        )
-        with pytest.raises(ParseError):
             parse_response(text)
 
     def test_code_block_missing_body_raises(self) -> None:

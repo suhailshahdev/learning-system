@@ -32,8 +32,10 @@ from app.core.db import SessionLocal
 from app.models import SessionTurn, TransportKind, TurnRole
 from app.schemas.parsed_response import ParsedTurn
 from app.services.session_service import (
+    ESTIMATED_LOOKAHEAD_COST,
     HANDOVER_THRESHOLD,
     SessionServiceError,
+    request_next_question,
     send_user_answer,
     start_session,
 )
@@ -79,36 +81,52 @@ async def smoke_one(
         print(f"  [start] session.message_count={session.claude_chat_message_count}")
         original_chat_url = session.claude_chat_url
 
-        print(f"  [force] session.message_count := {HANDOVER_THRESHOLD}")
-        session.claude_chat_message_count = HANDOVER_THRESHOLD
-        db.commit()
-
+        # The user must answer first so the session reaches the
+        # post-grading state that request_next_question requires.
+        # We force the count to threshold just before request_next_question
+        # so the handover fires there, not on send_user_answer.
         followup_answer = (
             parsed.expected_answer if parsed.expected_answer is not None else "I do not know."
         )
         print(f"  [send] answer={followup_answer[:60]!r}")
-
-        next_parsed = await send_user_answer(
+        grading = await send_user_answer(
             db=db,
             transport=transport,
             session_id=session.id,
             answer=followup_answer,
         )
+        print(f"  [send] grading.kind={grading.kind}")
+
+        # Force the count so request_next_question's look-ahead check
+        # (current + ESTIMATED_LOOKAHEAD_COST > threshold) triggers
+        # the handover path.
+        forced_count = HANDOVER_THRESHOLD - ESTIMATED_LOOKAHEAD_COST + 1
+        print(f"  [force] session.message_count := {forced_count}")
+        session.claude_chat_message_count = forced_count
+        db.commit()
+
+        next_parsed = await request_next_question(
+            db=db,
+            transport=transport,
+            session_id=session.id,
+        )
 
         if not isinstance(next_parsed, ParsedTurn):
-            raise RuntimeError(f"Expected ParsedTurn from new chat, got {next_parsed.kind!r}.")
+            raise RuntimeError(
+                f"Expected ParsedTurn from new chat after handover, got {next_parsed.kind!r}.",
+            )
 
-        print(f"  [send] new chat parsed.kind={next_parsed.kind}")
-        print(f"  [send] new chat parsed.mode={next_parsed.mode.value}")
-        print(f"  [send] new chat parsed.question={next_parsed.question[:100]!r}")
+        print(f"  [continue] new chat parsed.kind={next_parsed.kind}")
+        print(f"  [continue] new chat parsed.mode={next_parsed.mode.value}")
+        print(f"  [continue] new chat parsed.question={next_parsed.question[:100]!r}")
 
         db.refresh(session)
-        print(f"  [send] session.message_count={session.claude_chat_message_count}")
+        print(f"  [continue] session.message_count={session.claude_chat_message_count}")
         if transport_kind is TransportKind.CLAUDE_PLAYWRIGHT:
             new_chat_url = session.claude_chat_url
             if new_chat_url == original_chat_url:
                 raise RuntimeError("Playwright session.claude_chat_url unchanged across handover.")
-            print(f"  [send] new claude_chat_url={new_chat_url}")
+            print(f"  [continue] new claude_chat_url={new_chat_url}")
 
         turns = (
             db.query(SessionTurn)
@@ -116,7 +134,10 @@ async def smoke_one(
             .order_by(SessionTurn.turn_index)
             .all()
         )
-        new_turns = turns[2:]
+        # Pre-handover turns: SYSTEM(0), ASSISTANT(1) from start, plus
+        # USER(2), GRADING(3) from the user's answer. The 5 transition
+        # turns land at indexes 4..8.
+        new_turns = turns[4:]
         if len(new_turns) != EXPECTED_NEW_TURNS:
             raise RuntimeError(
                 f"Expected {EXPECTED_NEW_TURNS} new turns, got {len(new_turns)}.",

@@ -53,9 +53,6 @@ TURN_FIELDS = (
     "DIFFICULTY",
     "PREREQUISITES",
     "MODE",
-    "GRADING",
-    "GRADING_EXPLANATION",
-    "GRADING_EXPLANATION_CODE",
     "QUESTION",
     "QUESTION_CODE",
     "EXPECTED_ANSWER",
@@ -168,11 +165,6 @@ def _parse_turn(blocks: list[tuple[str, str]], raw: str) -> ParsedTurn:
         "difficulty": _parse_enum(fields["DIFFICULTY"], Difficulty, "DIFFICULTY", raw),
         "prerequisites": _parse_prerequisites(fields["PREREQUISITES"], raw),
         "mode": _parse_enum(fields["MODE"], LearningMode, "MODE", raw),
-        "grading_verdict": _parse_grading_verdict(fields["GRADING"], raw),
-        "grading_explanation": _none_if_sentinel(fields["GRADING_EXPLANATION"], SENTINEL_NONE),
-        "grading_explanation_code": _parse_code_block(
-            fields["GRADING_EXPLANATION_CODE"], "GRADING_EXPLANATION_CODE", raw
-        ),
         "question": fields["QUESTION"],
         "question_code": _parse_code_block(fields["QUESTION_CODE"], "QUESTION_CODE", raw),
         "expected_answer": _none_if_sentinel(fields["EXPECTED_ANSWER"], SENTINEL_OPEN),
@@ -367,14 +359,6 @@ def _parse_enum[E: (Difficulty, LearningMode, GradingVerdict)](
             raw_response=raw,
             cause=e,
         ) from e
-
-
-def _parse_grading_verdict(value: str, raw: str) -> GradingVerdict | None:
-    """Parse the GRADING field. Returns None for the NONE sentinel."""
-    stripped = value.strip()
-    if stripped == SENTINEL_NONE or not stripped:
-        return None
-    return _parse_enum(value, GradingVerdict, "GRADING", raw)
 
 
 def _parse_code_block(value: str, field_name: str, raw: str) -> CodeBlock | None:
