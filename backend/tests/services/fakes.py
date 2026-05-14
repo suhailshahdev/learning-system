@@ -122,7 +122,20 @@ class FakeTransport:
         results the service sent by reading chat.tool_results_received,
         and the next canned response simulates the LLM's reply after
         seeing those results.
+
+        Honors raise_on_send / raise_on_send_at because send_tool_results
+        is a send-style transport operation: real transports can fail
+        here for the same reasons send() can (network, auth, rate
+        limit). Tests injecting failures via raise_on_send_at can
+        target this method by counting it as one of the indexed sends.
         """
+        if self._raise_on_send is not None and (
+            self._raise_on_send_at is None or self._raise_on_send_at == self._send_call_count
+        ):
+            self._send_call_count += 1
+            raise self._raise_on_send
+
+        self._send_call_count += 1
         chat.tool_results_received.append(results)
         chat.message_count += 1
         if not self._responses:
