@@ -30,6 +30,7 @@ from typing import Annotated, Literal
 from app.models.enums import (  # noqa: TC002
     Difficulty,
     DomainKind,
+    GradingVerdict,
     LearningMode,
     SessionState,
     TopicStatus,
@@ -113,6 +114,44 @@ class GetRecentSessionsInput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     limit: int = Field(default=5, ge=1, le=20)
+
+
+class GetWeakTopicsInput(BaseModel):
+    """Input for get_weak_topics.
+
+    Returns topics where the user has incorrect or partial grading
+    verdicts on past learned items. Used by diagnostic mode to
+    surface "where am I failing." The min_attempts floor filters
+    out topics with too little data to draw a conclusion.
+
+    sample_size caps how many representative wrong-answer questions
+    come back per topic. Three is the working default: enough for
+    the LLM to spot patterns, few enough not to bloat responses.
+    Set to 0 to get counts only.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_attempts: int = Field(default=2, ge=1, le=50)
+    sample_size: int = Field(default=3, ge=0, le=10)
+
+
+class GetStaleTopicsInput(BaseModel):
+    """Input for get_stale_topics.
+
+    Returns topics with old last_reviewed_at timestamps, ordered
+    oldest-first. Used by diagnostic mode to surface "what have
+    I forgotten." The days_threshold filter keeps the LLM focused
+    on topics actually stale enough to warrant revisiting.
+
+    limit caps the result set so the LLM does not get an overwhelming
+    list when the user has many old topics.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    days_threshold: int = Field(default=14, ge=1, le=365)
+    limit: int = Field(default=10, ge=1, le=50)
 
 
 # ---------- Tool outputs ----------
@@ -227,6 +266,79 @@ class RecentSessionInfo(BaseModel):
     created_at: datetime
 
 
+class WrongAnswerSample(BaseModel):
+    """One representative wrong-answer question for a weak topic.
+
+    Question text is truncated to 200 chars to give the LLM
+    concrete signal without pulling full question history into the
+    response. Verdict is included so the LLM can distinguish "tried
+    and got it wrong" from "tried and got close."
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    question: str = Field(max_length=200)
+    verdict: GradingVerdict
+
+
+class WeakTopicInfo(BaseModel):
+    """One topic where the user has shown weakness.
+
+    Counts are by grading verdict so the LLM can weigh "consistently
+    wrong" against "mostly correct, one slip." samples is up to
+    sample_size representative wrong-answer questions, or empty if
+    the caller passed sample_size=0.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    topic_path: str
+    incorrect_count: int
+    partial_count: int
+    correct_count: int
+    samples: list[WrongAnswerSample]
+
+
+class GetWeakTopicsOutput(BaseModel):
+    """Output for get_weak_topics.
+
+    Topics are ordered worst-first by a simple weakness score
+    (incorrect + 0.5 * partial, divided by total). Empty list when
+    no topic clears min_attempts.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    topics: list[WeakTopicInfo]
+
+
+class StaleTopicInfo(BaseModel):
+    """One topic the user has not reviewed recently.
+
+    days_since_review is computed at handler time from
+    last_reviewed_at, included pre-computed so the LLM does not have
+    to parse and subtract dates.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    topic_path: str
+    last_reviewed_at: datetime
+    days_since_review: int
+
+
+class GetStaleTopicsOutput(BaseModel):
+    """Output for get_stale_topics.
+
+    Topics are ordered oldest-first (most stale first). Empty list
+    when no topic is older than days_threshold.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    topics: list[StaleTopicInfo]
+
+
 class GetRecentSessionsOutput(BaseModel):
     """Output for get_recent_sessions."""
 
@@ -246,6 +358,8 @@ type ToolName = Literal[
     "create_or_update_topic",
     "get_user_knowledge_summary",
     "get_recent_sessions",
+    "get_weak_topics",
+    "get_stale_topics",
 ]
 
 
@@ -303,12 +417,28 @@ class GetRecentSessionsCall(BaseModel):
     id: str | None = None
 
 
+class GetWeakTopicsCall(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    name: Literal["get_weak_topics"] = "get_weak_topics"
+    args: GetWeakTopicsInput
+    id: str | None = None
+
+
+class GetStaleTopicsCall(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    name: Literal["get_stale_topics"] = "get_stale_topics"
+    args: GetStaleTopicsInput
+    id: str | None = None
+
+
 type ToolCall = Annotated[
     ListDomainsCall
     | CreateDomainCall
     | GetTopicsByDomainCall
     | CreateOrUpdateTopicCall
     | GetUserKnowledgeSummaryCall
-    | GetRecentSessionsCall,
+    | GetRecentSessionsCall
+    | GetWeakTopicsCall
+    | GetStaleTopicsCall,
     Field(discriminator="name"),
 ]

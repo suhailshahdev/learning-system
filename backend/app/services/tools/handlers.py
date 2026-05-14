@@ -14,6 +14,7 @@ the tool call.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -21,11 +22,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.models import (
     Domain,
+    LearnedItem,
     Session,
     Topic,
     UserKnowledgeAssertion,
 )
-from app.models.enums import Difficulty
+from app.models.enums import Difficulty, GradingVerdict
 from app.schemas.common import Prerequisite
 from app.schemas.tools import (
     CreateDomainInput,
@@ -35,15 +37,22 @@ from app.schemas.tools import (
     DomainInfo,
     GetRecentSessionsInput,
     GetRecentSessionsOutput,
+    GetStaleTopicsInput,
+    GetStaleTopicsOutput,
     GetTopicsByDomainInput,
     GetTopicsByDomainOutput,
     GetUserKnowledgeSummaryInput,
     GetUserKnowledgeSummaryOutput,
+    GetWeakTopicsInput,
+    GetWeakTopicsOutput,
     KnowledgeRow,
     ListDomainsInput,
     ListDomainsOutput,
     RecentSessionInfo,
+    StaleTopicInfo,
     TopicInfo,
+    WeakTopicInfo,
+    WrongAnswerSample,
 )
 from app.services.topic_crud import get_or_create_topic
 
@@ -239,6 +248,167 @@ async def get_recent_sessions(
             for session, topic_path in rows
         ]
     )
+
+
+# Weakness score weighting. Incorrect counts as 1.0, partial as 0.5,
+# correct as 0.0. Pulled into a constant so the formula is named
+# and a future tweak (e.g. weighing partial higher because it means
+# the user almost had it) has one place to land.
+_INCORRECT_WEIGHT = 1.0
+_PARTIAL_WEIGHT = 0.5
+
+
+async def get_weak_topics(db: DbSession, args: GetWeakTopicsInput) -> GetWeakTopicsOutput:
+    """Aggregate learned items by topic, surface topics with weakness.
+
+    Walks every LearnedItem that has a grading_verdict, groups by
+    topic, counts verdicts, and returns topics whose total attempt
+    count meets min_attempts and whose weakness score is non-zero.
+    Topics where every attempt was correct are skipped (nothing to
+    diagnose).
+
+    Ordered worst-first by weakness score. Up to sample_size
+    representative wrong-answer questions are attached per topic,
+    truncated at 200 chars. Setting sample_size=0
+    returns counts only.
+
+    Read-only, no commit needed.
+    """
+    items = db.execute(
+        select(LearnedItem, Topic.path)
+        .join(Topic, LearnedItem.topic_id == Topic.id)
+        .where(LearnedItem.grading_verdict.is_not(None))
+        .order_by(LearnedItem.last_reviewed_at.desc())
+    ).all()
+
+    # Group items by topic_path. Each group accumulates verdict counts
+    # and a bounded queue of sample questions (most recent first via
+    # the query's ORDER BY).
+    counts_by_path: dict[str, dict[GradingVerdict, int]] = defaultdict(
+        lambda: dict.fromkeys(GradingVerdict, 0)
+    )
+    samples_by_path: dict[str, list[WrongAnswerSample]] = defaultdict(list)
+
+    for item, topic_path in items:
+        verdict = item.grading_verdict
+        counts_by_path[topic_path][verdict] += 1
+
+        if (
+            args.sample_size > 0
+            and verdict in (GradingVerdict.INCORRECT, GradingVerdict.PARTIAL)
+            and len(samples_by_path[topic_path]) < args.sample_size
+        ):
+            samples_by_path[topic_path].append(
+                WrongAnswerSample(
+                    question=_truncate(item.question, 200),
+                    verdict=verdict,
+                )
+            )
+
+    weak_topics: list[tuple[float, WeakTopicInfo]] = []
+    for topic_path, counts in counts_by_path.items():
+        total = sum(counts.values())
+        if total < args.min_attempts:
+            continue
+
+        incorrect = counts[GradingVerdict.INCORRECT]
+        partial = counts[GradingVerdict.PARTIAL]
+        correct = counts[GradingVerdict.CORRECT]
+
+        score = (incorrect * _INCORRECT_WEIGHT + partial * _PARTIAL_WEIGHT) / total
+        if score == 0.0:
+            continue
+
+        weak_topics.append(
+            (
+                score,
+                WeakTopicInfo(
+                    topic_path=topic_path,
+                    incorrect_count=incorrect,
+                    partial_count=partial,
+                    correct_count=correct,
+                    samples=samples_by_path[topic_path],
+                ),
+            )
+        )
+
+    # Worst-first ordering. Tie-break by topic_path so the result is
+    # deterministic when two topics have identical scores.
+    weak_topics.sort(key=lambda pair: (-pair[0], pair[1].topic_path))
+
+    return GetWeakTopicsOutput(topics=[info for _, info in weak_topics])
+
+
+async def get_stale_topics(db: DbSession, args: GetStaleTopicsInput) -> GetStaleTopicsOutput:
+    """Surface topics with old last_reviewed_at timestamps.
+
+    Reads every Topic with a last_reviewed_at older than the
+    threshold and returns it. Topics that have never been reviewed
+    (last_reviewed_at IS NULL) are skipped: "never reviewed" is a
+    different signal from "haven't revisited in a while" and the
+    diagnostic LLM has list_domains and the knowledge summary for
+    that case already.
+
+    Ordered oldest-first. Limit caps the result so the LLM does not
+    get a flood when the user has many stale topics.
+
+    Read-only, no commit needed.
+    """
+    now = datetime.now(UTC)
+    threshold = now - timedelta(days=args.days_threshold)
+
+    topics = (
+        db.execute(
+            select(Topic)
+            .where(Topic.last_reviewed_at.is_not(None))
+            .where(Topic.last_reviewed_at < threshold)
+            .order_by(Topic.last_reviewed_at.asc())
+            .limit(args.limit)
+        )
+        .scalars()
+        .all()
+    )
+
+    result: list[StaleTopicInfo] = []
+    for topic in topics:
+        # Query filters last_reviewed_at IS NOT NULL but mypy cannot
+        # carry that proof to the call site. Assert documents the
+        # query-level invariant and narrows the type.
+        assert topic.last_reviewed_at is not None
+        reviewed_at = _aware(topic.last_reviewed_at)
+        result.append(
+            StaleTopicInfo(
+                topic_path=topic.path,
+                last_reviewed_at=reviewed_at,
+                days_since_review=(now - reviewed_at).days,
+            )
+        )
+    return GetStaleTopicsOutput(topics=result)
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """Cap text at max_chars, appending an ellipsis when truncated.
+
+    Used by get_weak_topics to enforce 200-char cap on sample
+    questions. The ellipsis takes one of those chars rather than
+    being appended after, so the cap is honored.
+    """
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _aware(dt: datetime) -> datetime:
+    """Return a timezone-aware datetime, assuming UTC for naive inputs.
+
+    SQLite drops tz info on DateTime(timezone=True) columns, so
+    last_reviewed_at comes back naive even though it was written aware.
+    This helper normalizes to UTC for the subtraction in
+    get_stale_topics so timedelta math is consistent.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _topic_info(topic: Topic) -> TopicInfo:

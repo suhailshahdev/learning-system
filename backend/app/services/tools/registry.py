@@ -19,8 +19,10 @@ from app.schemas.tools import (
     CreateDomainCall,
     CreateOrUpdateTopicCall,
     GetRecentSessionsCall,
+    GetStaleTopicsCall,
     GetTopicsByDomainCall,
     GetUserKnowledgeSummaryCall,
+    GetWeakTopicsCall,
     ListDomainsCall,
     ToolCall,
 )
@@ -28,8 +30,10 @@ from app.services.tools.handlers import (
     create_domain,
     create_or_update_topic,
     get_recent_sessions,
+    get_stale_topics,
     get_topics_by_domain,
     get_user_knowledge_summary,
+    get_weak_topics,
     list_domains,
 )
 
@@ -49,10 +53,12 @@ HANDLERS = {
     "create_or_update_topic": create_or_update_topic,
     "get_user_knowledge_summary": get_user_knowledge_summary,
     "get_recent_sessions": get_recent_sessions,
+    "get_weak_topics": get_weak_topics,
+    "get_stale_topics": get_stale_topics,
 }
 
 
-async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:
+async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:  # noqa: PLR0911
     """Dispatch a ToolCall to the matching handler.
 
     Pydantic narrows `call` based on its discriminator. The match
@@ -74,3 +80,7 @@ async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:
             return await get_user_knowledge_summary(db, call.args)
         case GetRecentSessionsCall():
             return await get_recent_sessions(db, call.args)
+        case GetWeakTopicsCall():
+            return await get_weak_topics(db, call.args)
+        case GetStaleTopicsCall():
+            return await get_stale_topics(db, call.args)
