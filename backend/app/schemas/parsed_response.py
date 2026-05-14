@@ -151,11 +151,41 @@ class ParsedToolCall(BaseModel):
     raw_text: str
 
 
+class ParsedProposal(BaseModel):
+    """A topic proposal from the diagnostic LLM.
+
+    Emitted by the throwaway diagnostic chat after the LLM has read
+    analytical state via tools. The user sees the topic_path and
+    reasoning, then accepts (starts a fresh session on that topic)
+    or rejects (back to manual topic entry).
+
+    Two fields by design. confidence was rejected because
+    the LLM defaults to "high" when asked, the reasoning field
+    carries that signal more honestly.
+
+    topic_path is validated only for non-emptiness here. Whether
+    the path exists or matches the Domain > Category > Subtopic
+    shape is the service layer's job, not the parser's. Matches
+    how ParsedTurn.topic_path is treated.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["proposal"] = "proposal"
+    topic_path: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+
+
 # Discriminated union over the five response shapes. Pydantic
 # narrows on the kind field and mypy follows in match-case blocks.
 # Use this as the parser return type so consumers can pattern-match
 # exhaustively.
 type ParsedResponse = Annotated[
-    ParsedTurn | ParsedSessionEnd | ParsedHandover | ParsedToolCall | ParsedGrading,
+    ParsedTurn
+    | ParsedSessionEnd
+    | ParsedHandover
+    | ParsedToolCall
+    | ParsedGrading
+    | ParsedProposal,
     Field(discriminator="kind"),
 ]

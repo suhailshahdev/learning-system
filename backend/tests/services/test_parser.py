@@ -13,6 +13,7 @@ from app.models.enums import Difficulty, DomainKind, GradingVerdict, LearningMod
 from app.schemas.parsed_response import (
     ParsedGrading,
     ParsedHandover,
+    ParsedProposal,
     ParsedSessionEnd,
     ParsedToolCall,
     ParsedTurn,
@@ -201,6 +202,15 @@ TOOL_CALL_CREATE_OR_UPDATE_TOPIC = """\
 ---END---
 """
 
+# Happy-path proposal block. Two required keys, terminated by
+# END_PROPOSAL. Mirrors the handover format shape.
+PROPOSAL_HAPPY = """\
+---PROPOSAL---
+TOPIC_PATH: Python > Data Types > Integers
+REASONING: You have 4 incorrect attempts on integer arithmetic in the last week. Worth revisiting before moving to floats.
+---END_PROPOSAL---
+"""
+
 
 class TestParseTurn:
     def test_full_turn_parses(self) -> None:
@@ -263,6 +273,15 @@ class TestParseHandover:
         assert result.next_planned == "Boolean operations"
         assert result.open_threads == "User asked about complex numbers"
         assert result.user_state == "Confident on basic arithmetic"
+
+
+class TestParseProposal:
+    def test_proposal_parses(self) -> None:
+        result = parse_response(PROPOSAL_HAPPY)
+        assert isinstance(result, ParsedProposal)
+        assert result.kind == "proposal"
+        assert result.topic_path == "Python > Data Types > Integers"
+        assert "incorrect attempts" in result.reasoning
 
 
 class TestParseGrading:
@@ -393,6 +412,57 @@ class TestParseErrors:
     def test_handover_unknown_key_raises(self) -> None:
         text = HANDOVER.replace("DOMAIN_FOCUS:", "MYSTERY_KEY:")
         with pytest.raises(ParseError, match="Unknown handover key"):
+            parse_response(text)
+
+    def test_proposal_missing_end_marker_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace("---END_PROPOSAL---\n", "")
+        with pytest.raises(ParseError, match="PROPOSAL must be followed by END_PROPOSAL"):
+            parse_response(text)
+
+    def test_proposal_missing_topic_path_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace("TOPIC_PATH: Python > Data Types > Integers\n", "")
+        with pytest.raises(ParseError, match="missing fields"):
+            parse_response(text)
+
+    def test_proposal_missing_reasoning_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace(
+            "REASONING: You have 4 incorrect attempts on integer "
+            "arithmetic in the last week. Worth revisiting before "
+            "moving to floats.\n",
+            "",
+        )
+        with pytest.raises(ParseError, match="missing fields"):
+            parse_response(text)
+
+    def test_proposal_unknown_key_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace("TOPIC_PATH:", "MYSTERY_KEY:")
+        with pytest.raises(ParseError, match="Unknown proposal key"):
+            parse_response(text)
+
+    def test_proposal_malformed_line_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace(
+            "TOPIC_PATH: Python > Data Types > Integers",
+            "TOPIC_PATH without a colon",
+        )
+        with pytest.raises(ParseError, match="Malformed proposal line"):
+            parse_response(text)
+
+    def test_proposal_empty_topic_path_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace(
+            "TOPIC_PATH: Python > Data Types > Integers",
+            "TOPIC_PATH: ",
+        )
+        with pytest.raises(ParseError, match="schema validation"):
+            parse_response(text)
+
+    def test_proposal_empty_reasoning_raises(self) -> None:
+        text = PROPOSAL_HAPPY.replace(
+            "REASONING: You have 4 incorrect attempts on integer "
+            "arithmetic in the last week. Worth revisiting before "
+            "moving to floats.",
+            "REASONING: ",
+        )
+        with pytest.raises(ParseError, match="schema validation"):
             parse_response(text)
 
     def test_tool_call_missing_end_raises(self) -> None:

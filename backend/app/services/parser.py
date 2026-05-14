@@ -30,6 +30,7 @@ from app.schemas.parsed_response import (
     CodeBlock,
     ParsedGrading,
     ParsedHandover,
+    ParsedProposal,
     ParsedResponse,
     ParsedSessionEnd,
     ParsedToolCall,
@@ -74,6 +75,11 @@ HANDOVER_KEYS = (
     "NEXT_PLANNED",
     "OPEN_THREADS",
     "USER_STATE",
+)
+
+PROPOSAL_KEYS = (
+    "TOPIC_PATH",
+    "REASONING",
 )
 
 # A single-block response (header + body) must be followed by an
@@ -133,6 +139,8 @@ def parse_response(text: str) -> ParsedResponse:
         return _parse_tool_call(blocks, raw=text)
     if first_marker == "GRADING":
         return _parse_grading(blocks, raw=text)
+    if first_marker == "PROPOSAL":
+        return _parse_proposal(blocks, raw=text)
 
     raise ParseError(f"Unknown leading delimiter: {first_marker!r}.", raw_response=text)
 
@@ -208,6 +216,64 @@ def _parse_handover(blocks: list[tuple[str, str]], raw: str) -> ParsedHandover:
         return ParsedHandover.model_validate(fields)
     except ValidationError as e:
         raise ParseError("Handover failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_proposal(blocks: list[tuple[str, str]], raw: str) -> ParsedProposal:
+    """Build a ParsedProposal from a block list starting with PROPOSAL.
+
+    The proposal format is one block of KEY: value lines, terminated
+    by ---END_PROPOSAL---. Same shape as a handover block but with
+    different keys (TOPIC_PATH, REASONING) and a smaller required
+    set.
+
+    Field-presence is strict: missing keys raise ParseError
+    rather than defaulting silently. A diagnostic LLM that omits
+    REASONING has misunderstood the format and a loud failure surfaces
+    that early.
+    """
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END_PROPOSAL":
+        raise ParseError("PROPOSAL must be followed by END_PROPOSAL.", raw_response=raw)
+
+    body = blocks[0][1]
+    fields = _parse_proposal_body(body, raw=raw)
+
+    try:
+        return ParsedProposal.model_validate(fields)
+    except ValidationError as e:
+        raise ParseError("Proposal failed schema validation.", raw_response=raw, cause=e) from e
+
+
+def _parse_proposal_body(body: str, raw: str) -> dict[str, str]:
+    """Parse the KEY: value lines inside a proposal block.
+
+    Mirrors _parse_handover_body. Each line is KEY: value, keys are
+    validated against PROPOSAL_KEYS, missing keys raise. The block
+    must contain every required key once. Duplicate keys overwrite
+    silently (last wins) which is consistent with handover behavior.
+    """
+    fields: dict[str, str] = {}
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise ParseError(f"Malformed proposal line (no colon): {line!r}", raw_response=raw)
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key not in PROPOSAL_KEYS:
+            raise ParseError(f"Unknown proposal key: {key!r}", raw_response=raw)
+        fields[_proposal_field_name(key)] = value
+
+    missing = [k for k in PROPOSAL_KEYS if _proposal_field_name(k) not in fields]
+    if missing:
+        raise ParseError(f"Proposal missing fields: {missing}", raw_response=raw)
+    return fields
+
+
+def _proposal_field_name(key: str) -> str:
+    """Convert wire-format KEY (uppercase) to model field name (lowercase)."""
+    return key.lower()
 
 
 def _parse_grading(blocks: list[tuple[str, str]], raw: str) -> ParsedGrading:
