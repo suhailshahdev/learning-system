@@ -347,7 +347,7 @@ def _parse_tool_call(blocks: list[tuple[str, str]], raw: str) -> ParsedToolCall:
         ) from e
 
     try:
-        return ParsedToolCall.model_validate({"call": call, "raw_text": body})
+        return ParsedToolCall.model_validate({"calls": [call], "raw_text": body})
     except ValidationError as e:
         raise ParseError(
             "ParsedToolCall failed schema validation.",

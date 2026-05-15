@@ -1157,10 +1157,11 @@ async def test_send_user_answer_with_single_tool_call_persists_turn_pair(
     # turn_index is unbroken
     assert [t.turn_index for t in turns] == [0, 1, 2, 3, 4, 5]
 
-    # TOOL_CALL turn has the validated call in parsed
+    # TOOL_CALL turn has the single call in parsed under "call".
+    # The new persistence shape persists one call per turn, so
+    # parsed is {"call": {<call dict>}}, not the whole ParsedToolCall.
     tool_call_turn = turns[3]
     assert tool_call_turn.parsed is not None
-    assert tool_call_turn.parsed["kind"] == "tool_call"
     assert tool_call_turn.parsed["call"]["name"] == "list_domains"
 
     # TOOL_RESULT turn has the handler's output as structured JSON

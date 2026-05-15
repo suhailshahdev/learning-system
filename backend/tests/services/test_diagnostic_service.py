@@ -174,3 +174,34 @@ async def test_transport_response_with_native_tool_calls_handled(db: DbSession) 
     result = await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
 
     assert isinstance(result, ParsedProposal)
+
+
+async def test_multiple_native_tool_calls_in_one_response_all_executed(db: DbSession) -> None:
+    """DeepSeek returning N tool_calls in one response: all N execute, all N results sent back.
+
+    Falsifying test for the bug where the service only executed
+    tool_calls[0] and the DeepSeek API rejected the next request
+    because fewer-than-N tool messages followed an N-call assistant
+    message.
+    """
+    weak_call = GetWeakTopicsCall(args=GetWeakTopicsInput(), id="call_001")
+    stale_call = GetWeakTopicsCall(args=GetWeakTopicsInput(), id="call_002")
+
+    transport = FakeTransport(
+        [
+            TransportResponse(text="", tool_calls=[weak_call, stale_call]),
+            PROPOSAL_RESPONSE,
+        ]
+    )
+
+    result = await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+
+    assert isinstance(result, ParsedProposal)
+    # Both calls' results must have been bundled into one send_tool_results
+    # call. If only one was sent, this is the regression.
+    assert len(transport.chats) == 1
+    assert len(transport.chats[0].tool_results_received) == 1
+    results_sent = transport.chats[0].tool_results_received[0]
+    assert len(results_sent) == 2
+    sent_ids = {r.call_id for r in results_sent}
+    assert sent_ids == {"call_001", "call_002"}

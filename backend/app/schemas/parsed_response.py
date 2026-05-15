@@ -126,28 +126,31 @@ class ParsedHandover(BaseModel):
 
 
 class ParsedToolCall(BaseModel):
-    """The LLM is invoking a tool to read or write system state.
+    """One or more tool invocations from the LLM in a single response.
 
-    Used by the Claude transport's structured-prompt fallback:
-    the LLM emits a ---TOOL_CALL--- block in chat output, the parser
-    validates it into this shape, and the session-service loop
-    executes the handler and feeds the result back as the next user
-    message.
+    OpenAI-compatible APIs (DeepSeek) return multiple tool_calls in
+    one assistant message when the LLM wants to call several tools
+    in parallel. The API contract is strict: every tool_call_id in
+    that message must be answered by a matching tool result in the
+    next request, or the API rejects with HTTP 400. This applies to
+    DeepSeek directly. Claude transport's chat-text format always
+    produces one call per ---TOOL_CALL--- block, but lands here as
+    a single-element list for shape uniformity.
 
-    The DeepSeek transport does not produce ParsedToolCall via the
-    parser. It uses native function calling and converts API
-    tool_calls into the same ToolCall value internally, then runs
-    through the same registry. Both paths converge on the registry
-    so handlers stay transport-agnostic.
+    The session-service and diagnostic-service loops execute every
+    call in the list, batch all results, and send them back as one
+    list to send_tool_results. This honors the API contract
+    regardless of how many calls the LLM made.
 
-    raw_text is the original block content the LLM emitted, kept for
-    error_log when validation or execution fails.
+    raw_text is the original LLM output (a JSON array of tool calls
+    for the multi-call case, a single object for the single-call
+    case). Used by error_log when validation or execution fails.
     """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["tool_call"] = "tool_call"
-    call: ToolCall
+    calls: list[ToolCall] = Field(min_length=1)
     raw_text: str
 
 

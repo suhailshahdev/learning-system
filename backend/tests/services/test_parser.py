@@ -315,34 +315,34 @@ class TestParseToolCall:
         result = parse_response(TOOL_CALL_LIST_DOMAINS)
         assert isinstance(result, ParsedToolCall)
         assert result.kind == "tool_call"
-        assert result.call.name == "list_domains"
+        assert result.calls[0].name == "list_domains"
         # raw_text preserves the original block content for error_log.
         assert "list_domains" in result.raw_text
 
     def test_simple_args_tool_call_parses(self) -> None:
         result = parse_response(TOOL_CALL_GET_TOPICS)
         assert isinstance(result, ParsedToolCall)
-        assert result.call.name == "get_topics_by_domain"
-        assert isinstance(result.call, GetTopicsByDomainCall)
-        assert result.call.args.domain_name == "Python"
+        assert result.calls[0].name == "get_topics_by_domain"
+        assert isinstance(result.calls[0], GetTopicsByDomainCall)
+        assert result.calls[0].args.domain_name == "Python"
 
     def test_create_domain_tool_call_parses(self) -> None:
         result = parse_response(TOOL_CALL_CREATE_DOMAIN)
         assert isinstance(result, ParsedToolCall)
-        assert isinstance(result.call, CreateDomainCall)
-        assert result.call.args.name == "Rust"
-        assert result.call.args.kind == DomainKind.LANGUAGE
-        assert result.call.args.description == "Systems language"
+        assert isinstance(result.calls[0], CreateDomainCall)
+        assert result.calls[0].args.name == "Rust"
+        assert result.calls[0].args.kind == DomainKind.LANGUAGE
+        assert result.calls[0].args.description == "Systems language"
 
     def test_create_or_update_topic_tool_call_parses(self) -> None:
         result = parse_response(TOOL_CALL_CREATE_OR_UPDATE_TOPIC)
         assert isinstance(result, ParsedToolCall)
-        assert isinstance(result.call, CreateOrUpdateTopicCall)
-        assert result.call.args.path == "Python > Data Types > Integers"
-        assert result.call.args.difficulty == Difficulty.BEGINNER
-        assert len(result.call.args.prerequisites) == 1
-        assert result.call.args.prerequisites[0].topic_path == "Python > Basics"
-        assert result.call.args.prerequisites[0].min_difficulty == Difficulty.BEGINNER
+        assert isinstance(result.calls[0], CreateOrUpdateTopicCall)
+        assert result.calls[0].args.path == "Python > Data Types > Integers"
+        assert result.calls[0].args.difficulty == Difficulty.BEGINNER
+        assert len(result.calls[0].args.prerequisites) == 1
+        assert result.calls[0].args.prerequisites[0].topic_path == "Python > Basics"
+        assert result.calls[0].args.prerequisites[0].min_difficulty == Difficulty.BEGINNER
 
 
 class TestParseErrors:

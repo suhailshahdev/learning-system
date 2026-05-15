@@ -14,6 +14,7 @@ propose_topic and returns the result as JSON.
 from __future__ import annotations
 
 import contextlib
+import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from app.prompts.diagnostic_intro import build_diagnostic_intro
@@ -168,21 +169,26 @@ async def _execute_until_proposal(
     a ParsedToolCall.
     """
     while isinstance(parsed, ParsedToolCall):
-        try:
-            output = await execute_tool_call(db, parsed.call)
-        except ToolHandlerError as e:
-            raise DiagnosticServiceError(
-                f"Tool handler {parsed.call.name!r} failed: {e.message}",
-                kind="tool_handler_failed",
-                cause=e,
-            ) from e
+        # Execute every tool call in the response before sending
+        # results back. OpenAI-compatible APIs require all calls
+        # in one assistant message to be answered together.
+        # Diagnostic mode is read-only, so handler failures here
+        # mean a real bug rather than a write-conflict.
+        results: list[ToolResult] = []
+        for call in parsed.calls:
+            try:
+                output = await execute_tool_call(db, call)
+            except ToolHandlerError as e:
+                raise DiagnosticServiceError(
+                    f"Tool handler {call.name!r} failed: {e.message}",
+                    kind="tool_handler_failed",
+                    cause=e,
+                ) from e
+            content = output.model_dump_json()
+            results.append(ToolResult(call_id=call.id or call.name, content=content))
 
-        content = output.model_dump_json()
-        call_id = parsed.call.id or parsed.call.name
-        result = ToolResult(call_id=call_id, content=content)
-
         try:
-            response = await transport.send_tool_results(chat, [result])
+            response = await transport.send_tool_results(chat, results)
         except TransportError as e:
             raise DiagnosticServiceError(
                 f"Transport failed sending tool results: {e.message}",
@@ -209,10 +215,15 @@ def _response_to_parsed(response: TransportResponse) -> ParsedResponse:
     field takes precedence (DeepSeek native function calling),
     otherwise parse the text (Claude transport's TOOL_CALL block
     or a terminal PROPOSAL).
+
+    All tool_calls in the response are passed through. OpenAI-
+    compatible APIs require every tool_call_id to be answered
+    in the next request.
     """
     if response.tool_calls:
-        call = response.tool_calls[0]
-        return ParsedToolCall(call=call, raw_text=call.model_dump_json())
+        calls = list(response.tool_calls)
+        raw_text = json.dumps([c.model_dump(mode="json") for c in calls])
+        return ParsedToolCall(calls=calls, raw_text=raw_text)
     return parse_response(response.text)
 
 
