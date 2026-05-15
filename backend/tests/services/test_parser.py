@@ -202,6 +202,62 @@ TOOL_CALL_CREATE_OR_UPDATE_TOPIC = """\
 ---END---
 """
 
+# Multi-call array form. The LLM emits an array when it needs
+# several independent tool results before producing content.
+TOOL_CALL_ARRAY_TWO = """\
+---TOOL_CALL---
+[
+  {"name": "list_domains", "args": {}},
+  {"name": "get_recent_sessions", "args": {"limit": 5}}
+]
+---END---
+"""
+
+TOOL_CALL_ARRAY_THREE = """\
+---TOOL_CALL---
+[
+  {"name": "list_domains", "args": {}},
+  {"name": "get_recent_sessions", "args": {"limit": 5}},
+  {"name": "get_topics_by_domain", "args": {"domain_name": "Python"}}
+]
+---END---
+"""
+
+# Empty array — invalid per the parser-strict convention.
+TOOL_CALL_ARRAY_EMPTY = """\
+---TOOL_CALL---
+[]
+---END---
+"""
+
+# Array containing a non-object entry — invalid.
+TOOL_CALL_ARRAY_BAD_ENTRY = """\
+---TOOL_CALL---
+[
+  {"name": "list_domains", "args": {}},
+  "not an object"
+]
+---END---
+"""
+
+# Top-level neither object nor array — invalid.
+TOOL_CALL_TOP_LEVEL_STRING = """\
+---TOOL_CALL---
+"just a string"
+---END---
+"""
+
+# Array containing a call with invalid args — should fail on the
+# specific entry, not silently include it or skip the rest.
+TOOL_CALL_ARRAY_INVALID_CALL = """\
+---TOOL_CALL---
+[
+  {"name": "list_domains", "args": {}},
+  {"name": "create_domain", "args": {}}
+]
+---END---
+"""
+
 # Happy-path proposal block. Two required keys, terminated by
 # END_PROPOSAL. Mirrors the handover format shape.
 PROPOSAL_HAPPY = """\
@@ -343,6 +399,52 @@ class TestParseToolCall:
         assert len(result.calls[0].args.prerequisites) == 1
         assert result.calls[0].args.prerequisites[0].topic_path == "Python > Basics"
         assert result.calls[0].args.prerequisites[0].min_difficulty == Difficulty.BEGINNER
+
+    def test_single_object_form_still_parses(self) -> None:
+        """Backward compatibility: existing single-object form still works."""
+        # This duplicates an existing test but names it as a regression
+        # check so future readers know the single form is supported on
+        # purpose, not by accident.
+        result = parse_response(TOOL_CALL_LIST_DOMAINS)
+        assert isinstance(result, ParsedToolCall)
+        assert len(result.calls) == 1
+        assert result.calls[0].name == "list_domains"
+
+    def test_array_form_two_calls_parses(self) -> None:
+        """Multi-call array with two entries lands as a 2-element calls list."""
+        result = parse_response(TOOL_CALL_ARRAY_TWO)
+        assert isinstance(result, ParsedToolCall)
+        assert len(result.calls) == 2
+        assert result.calls[0].name == "list_domains"
+        assert result.calls[1].name == "get_recent_sessions"
+
+    def test_array_form_three_calls_parses(self) -> None:
+        """Confirms the array path is not a two-only special case."""
+        result = parse_response(TOOL_CALL_ARRAY_THREE)
+        assert isinstance(result, ParsedToolCall)
+        assert len(result.calls) == 3
+        names = [c.name for c in result.calls]
+        assert names == ["list_domains", "get_recent_sessions", "get_topics_by_domain"]
+
+    def test_empty_array_raises(self) -> None:
+        """An empty TOOL_CALL array is a compliance failure, not silently accepted."""
+        with pytest.raises(ParseError, match="must not be empty"):
+            parse_response(TOOL_CALL_ARRAY_EMPTY)
+
+    def test_array_with_non_object_entry_raises(self) -> None:
+        """Non-object entries in the array fail with a clear index reference."""
+        with pytest.raises(ParseError, match="entry 1 must be a JSON object"):
+            parse_response(TOOL_CALL_ARRAY_BAD_ENTRY)
+
+    def test_top_level_not_object_or_array_raises(self) -> None:
+        """Top-level scalar JSON (string, number) is rejected with a clear message."""
+        with pytest.raises(ParseError, match="must be a JSON object or array"):
+            parse_response(TOOL_CALL_TOP_LEVEL_STRING)
+
+    def test_array_with_invalid_call_in_middle_raises(self) -> None:
+        """One bad call in the array fails the whole parse — no partial acceptance."""
+        with pytest.raises(ParseError, match="schema validation"):
+            parse_response(TOOL_CALL_ARRAY_INVALID_CALL)
 
 
 class TestParseErrors:

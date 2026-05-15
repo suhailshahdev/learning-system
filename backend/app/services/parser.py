@@ -305,15 +305,18 @@ def _parse_grading(blocks: list[tuple[str, str]], raw: str) -> ParsedGrading:
 def _parse_tool_call(blocks: list[tuple[str, str]], raw: str) -> ParsedToolCall:
     """Build a ParsedToolCall from a block list starting with TOOL_CALL.
 
-    The block carries a single JSON payload between the TOOL_CALL
-    delimiter and the END delimiter. Validates against the
-    discriminated ToolCall union which dispatches on the `name`
-    field to the matching call envelope.
+    The block body is either a single JSON object (one tool call)
+    or a JSON array of objects (multiple parallel tool calls). Both
+    forms produce a ParsedToolCall with calls: list[ToolCall];
+    single-object is wrapped in a one-element list for shape parity
+    with the multi-call path.
 
-    Returns a ParsedToolCall carrying both the validated call and
-    the raw block text. The session-service loop logs raw_text to
-    error_log if the handler later fails so the original LLM
-    output is preserved for inspection.
+    Multi-call form lets Claude transport match DeepSeek's parallel
+    tool-call capability. The LLM picks the form based on whether
+    it needs one tool's result before deciding next (single object)
+    or wants several results before producing teaching content (array).
+
+    raw_text preserves the original body for error_log debugging.
     """
     if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END":
         raise ParseError("TOOL_CALL must be followed by END.", raw_response=raw)
@@ -331,26 +334,61 @@ def _parse_tool_call(blocks: list[tuple[str, str]], raw: str) -> ParsedToolCall:
             cause=e,
         ) from e
 
-    if not isinstance(data, dict):
+    if isinstance(data, list):
+        calls = _validate_tool_call_array(data, raw=raw)
+    elif isinstance(data, dict):
+        calls = [_validate_tool_call(data, raw=raw)]
+    else:
         raise ParseError(
-            f"TOOL_CALL body must be a JSON object, got {type(data).__name__}.",
+            f"TOOL_CALL body must be a JSON object or array, got {type(data).__name__}.",
             raw_response=raw,
         )
 
     try:
-        call = _TOOL_CALL_ADAPTER.validate_python(data)
+        return ParsedToolCall.model_validate({"calls": calls, "raw_text": body})
     except ValidationError as e:
         raise ParseError(
-            "Tool call failed schema validation.",
+            "ParsedToolCall failed schema validation.",
             raw_response=raw,
             cause=e,
         ) from e
 
+
+def _validate_tool_call_array(data: list[object], raw: str) -> list[ToolCall]:
+    """Validate a JSON array of tool-call objects.
+
+    Empty arrays raise per the parser-strict convention: an LLM that
+    emits an empty array has misunderstood the format and we want a
+    loud failure, not silent acceptance.
+    """
+    if not data:
+        raise ParseError("TOOL_CALL array must not be empty.", raw_response=raw)
+    return [_validate_tool_call_entry(entry, raw=raw, index=i) for i, entry in enumerate(data)]
+
+
+def _validate_tool_call_entry(entry: object, raw: str, index: int) -> ToolCall:
+    """Validate one entry from a TOOL_CALL array.
+
+    Each entry must be a JSON object so the discriminated-union
+    adapter can dispatch on the `name` field. The index is included
+    in error messages so the LLM (and any human reading error_log)
+    knows which entry was malformed.
+    """
+    if not isinstance(entry, dict):
+        raise ParseError(
+            f"TOOL_CALL array entry {index} must be a JSON object, got {type(entry).__name__}.",
+            raw_response=raw,
+        )
+    return _validate_tool_call(entry, raw=raw)
+
+
+def _validate_tool_call(data: dict[str, object], raw: str) -> ToolCall:
+    """Validate a single tool-call dict through the discriminated union."""
     try:
-        return ParsedToolCall.model_validate({"calls": [call], "raw_text": body})
+        return _TOOL_CALL_ADAPTER.validate_python(data)
     except ValidationError as e:
         raise ParseError(
-            "ParsedToolCall failed schema validation.",
+            "Tool call failed schema validation.",
             raw_response=raw,
             cause=e,
         ) from e

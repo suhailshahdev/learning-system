@@ -104,11 +104,27 @@ To call a tool:
 {{"name": "<tool_name>", "args": {{<tool args>}}}}
 ---END---
 
-The next user message will contain the tool result:
+To call several tools in parallel when their results are
+independent (you want weak topics AND stale topics, neither
+depends on the other), send a JSON array instead:
+
+---TOOL_CALL---
+[
+  {{"name": "get_weak_topics", "args": {{}}}},
+  {{"name": "get_stale_topics", "args": {{}}}}
+]
+---END---
+
+The next user message will contain the tool result(s):
 
 ---TOOL_RESULT---
 {{"call_id": "<id>", "content": <tool output as JSON>}}
 ---END---
+
+For a parallel call, you receive one TOOL_RESULT block per
+call in the array, in the same order. Diagnostic mode often
+benefits from parallel reads since the analytical tools are
+independent.
 
 OUTPUT FORMAT
 =============

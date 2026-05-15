@@ -198,16 +198,29 @@ To call a tool (read or write system state):
 {{"name": "<tool_name>", "args": {{<tool args>}}}}
 ---END---
 
-The next user message will contain the tool result in this format:
+To call several tools in parallel when their results are
+independent (one tool's result does not change which other
+tools you would call), send a JSON array instead:
+
+---TOOL_CALL---
+[
+  {{"name": "<tool_name>", "args": {{<tool args>}}}},
+  {{"name": "<other_tool>", "args": {{<other args>}}}}
+]
+---END---
+
+The next user message will contain the tool result(s) in this format:
 
 ---TOOL_RESULT---
 {{"call_id": "<id>", "content": <tool output as JSON>}}
 ---END---
 
-Read the content and continue. You may call multiple tools
-in sequence before producing a teaching turn or grading
-response, but try to minimize tool calls when the information
-you need is already in this intro.
+For a parallel call, you receive one TOOL_RESULT block per
+call in the array, in the same order. Read the content and
+continue. Use the array form for independent reads; use the
+single-object form when you need one result before deciding
+the next call. Minimize tool calls when the information you
+need is already in this intro.
 
 LEARNING MODES
 ==============
@@ -239,16 +252,13 @@ AVAILABLE TOOLS
 
 You have access to four tools for reading and writing system
 state during a session. Call them via the ---TOOL_CALL---
-format above. After you call a tool, the next user message
-will contain the result in this format:
+format above (single object for one tool, JSON array for
+parallel calls when results are independent).
 
----TOOL_RESULT---
-{{"call_id": "<id>", "content": <tool output as JSON>}}
----END---
-
-Read the content and continue with whatever you needed the
-tool for. You may call multiple tools in sequence before
-producing a teaching turn.
+Read the result(s) and continue with whatever you needed the
+tools for. You may chain tool calls (one informs the next)
+or batch them as an array (independent reads). Mix freely
+across turns — only the order matters, not the form.
 
   get_topics_by_domain
     args: {{"domain_name": "<name>"}}
