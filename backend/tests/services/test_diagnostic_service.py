@@ -151,6 +151,16 @@ async def test_unparseable_response_raises(db: DbSession) -> None:
         await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
 
 
+async def test_error_carries_kind_discriminator(db: DbSession) -> None:
+    """DiagnosticServiceError exposes a kind field for HTTP mapping."""
+    transport = FakeTransport([TURN_RESPONSE])
+
+    with pytest.raises(DiagnosticServiceError) as exc_info:
+        await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+
+    assert exc_info.value.kind == "wrong_response_kind"
+
+
 async def test_transport_response_with_native_tool_calls_handled(db: DbSession) -> None:
     """DeepSeek-style native tool_calls field (not text) is handled."""
     tool_call = GetWeakTopicsCall(args=GetWeakTopicsInput(), id="call_123")

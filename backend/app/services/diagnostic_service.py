@@ -14,7 +14,7 @@ propose_topic and returns the result as JSON.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.prompts.diagnostic_intro import build_diagnostic_intro
 from app.schemas.parsed_response import ParsedProposal, ParsedToolCall
@@ -45,6 +45,18 @@ _FIRST_MESSAGE = (
 )
 
 
+# Failure modes for diagnostic_service. The route layer maps these
+# to HTTP status codes. Substring matching on messages was
+# considered and rejected: messages drift, kinds don't.
+type DiagnosticErrorKind = Literal[
+    "transport_failed",
+    "parse_failed",
+    "wrong_response_kind",
+    "tool_handler_failed",
+    "unexpected",
+]
+
+
 class DiagnosticServiceError(Exception):
     """A diagnostic-service operation failed.
 
@@ -52,11 +64,20 @@ class DiagnosticServiceError(Exception):
     service boundary. Distinct from SessionServiceError because
     diagnostic mode is not a session-service operation: there is
     no session row, no persistence, no resume.
+
+    kind is the discriminator the route layer uses to pick the
+    right HTTP status code. The pattern mirrors SessionResumeError.
     """
 
-    def __init__(self, message: str, cause: Exception | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        kind: DiagnosticErrorKind,
+        cause: Exception | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
+        self.kind: DiagnosticErrorKind = kind
         self.cause = cause
 
 
@@ -87,7 +108,9 @@ async def propose_topic(
         chat, response = await transport.start_new_chat(intro, _FIRST_MESSAGE)
     except TransportError as e:
         raise DiagnosticServiceError(
-            f"Transport failed opening diagnostic chat: {e.message}", cause=e
+            f"Transport failed opening diagnostic chat: {e.message}",
+            kind="transport_failed",
+            cause=e,
         ) from e
 
     try:
@@ -107,13 +130,18 @@ async def propose_topic(
     except Exception as e:
         await _close_quietly(transport, chat)
         raise DiagnosticServiceError(
-            f"Unexpected error during diagnostic flow: {e}", cause=e
+            f"Unexpected error during diagnostic flow: {e}",
+            kind="unexpected",
+            cause=e,
         ) from e
 
     await _close_quietly(transport, chat)
 
     if not isinstance(parsed, ParsedProposal):
-        raise DiagnosticServiceError(f"Expected a PROPOSAL response, got {parsed.kind!r}.")
+        raise DiagnosticServiceError(
+            f"Expected a PROPOSAL response, got {parsed.kind!r}.",
+            kind="wrong_response_kind",
+        )
     return parsed
 
 
@@ -144,7 +172,9 @@ async def _execute_until_proposal(
             output = await execute_tool_call(db, parsed.call)
         except ToolHandlerError as e:
             raise DiagnosticServiceError(
-                f"Tool handler {parsed.call.name!r} failed: {e.message}", cause=e
+                f"Tool handler {parsed.call.name!r} failed: {e.message}",
+                kind="tool_handler_failed",
+                cause=e,
             ) from e
 
         content = output.model_dump_json()
@@ -155,14 +185,18 @@ async def _execute_until_proposal(
             response = await transport.send_tool_results(chat, [result])
         except TransportError as e:
             raise DiagnosticServiceError(
-                f"Transport failed sending tool results: {e.message}", cause=e
+                f"Transport failed sending tool results: {e.message}",
+                kind="transport_failed",
+                cause=e,
             ) from e
 
         try:
             parsed = _response_to_parsed(response)
         except Exception as e:
             raise DiagnosticServiceError(
-                "Parse failed on response after tool result.", cause=e
+                "Parse failed on response after tool result.",
+                kind="parse_failed",
+                cause=e,
             ) from e
 
     return response, parsed
