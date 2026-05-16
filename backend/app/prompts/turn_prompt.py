@@ -35,11 +35,26 @@ def build_continue_prompt() -> str:
     """Build the prompt that triggers the next teaching turn.
 
     Sent after the user has read the grading response and the
-    backend received the continue signal from the frontend. The
-    chat already holds context from the grading just emitted,
-    this prompt just signals "ready for the next teaching turn."
+    backend received the continue signal from the frontend.
+
+    Wording is deliberately firm: DeepSeek pro has been observed
+    emitting a second grading response in this position when the
+    prompt was a polite request. The explicit "do not grade
+    again" instruction addresses that compliance failure.
     """
     return """\
-Continue with the next teaching turn. Reply in the standalone
-teaching-turn delimited format declared in the system intro.
+The previous grading response is complete and final. The user has
+read it. They are not seeking more feedback on their answer.
+
+Your task now is to produce the next teaching turn: a new question
+on the same topic or a related one, in the standalone teaching-turn
+format.
+
+Your reply MUST begin with the ---TOPIC--- delimiter. If your reply
+begins with ---GRADING--- you have misread the cycle — the grading
+phase ended with your previous response and the cycle is now at the
+teaching-turn phase.
+
+Format: ---TOPIC--- ... ---END--- as declared in the system intro.
+Do not produce any other response kind.
 """

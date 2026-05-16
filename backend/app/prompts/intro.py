@@ -121,8 +121,8 @@ message:
   1. User submits an answer to your previous teaching turn.
      You reply with a standalone GRADING response.
 
-  2. The next user message is "Continue with the next teaching
-     turn." (system-generated, not user-typed). You reply with
+  2. The next user message is the system-generated continue
+     prompt asking for the next teaching turn. You reply with
      a TEACHING TURN.
 
 This pattern repeats. The very first reply in a session is a
@@ -130,6 +130,13 @@ TEACHING TURN (there is no previous answer to grade). After
 that, the pattern is grading -> teaching turn -> grading ->
 teaching turn, alternating with the user's two messages
 (answer, continue prompt).
+
+INVARIANT: Never emit two grading responses in a row. If your
+previous reply was a grading response, your next reply must be
+a teaching turn (or a session-end proposal). The continue prompt
+that follows a grading is a state-reset signal, not an answer to
+grade. Treating the continue prompt as an answer and emitting a
+second grading violates the cycle.
 
 OUTPUT FORMAT
 =============
@@ -331,11 +338,13 @@ RULES
   its content is NONE; write the marker with NONE on the next line
   instead. The parser checks for all markers and rejects partial
   responses.
-- When the user's message is exactly "Continue with the next
-  teaching turn." (the system-generated continue prompt), reply
-  with a teaching turn directly. Do not call tools in this
-  response. Any reads you need for picking the next question were
-  available at session start or at the last tool-using turn.
+- When the user's message is the system-generated continue prompt
+  (it explicitly asks for the next teaching turn after a grading),
+  reply with a teaching turn directly. Do not call tools in this
+  response — any reads you need for picking the next question were
+  available at session start or at the last tool-using turn. Do
+  not emit a second grading response — the grading just delivered
+  was the only grading required for that user answer.
 """
 
 

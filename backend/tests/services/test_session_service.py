@@ -1366,7 +1366,12 @@ async def test_request_next_question_persists_continue_and_teaching_turns(db: Db
     # Turns: SYSTEM(0), ASSISTANT(1), USER(2), GRADING(3), USER(4), ASSISTANT(5)
     assert len(turns) == 6
     assert turns[4].role == TurnRole.USER
-    assert "Continue with the next teaching turn" in turns[4].raw_content
+    # Continue-prompt content was strengthened to address
+    # DeepSeek double-grading. The prompt now starts with a
+    # state-reset framing, "produce the next teaching turn" is the
+    # stable substring across the rewrite.
+    assert "produce" in turns[4].raw_content
+    assert "next teaching turn" in turns[4].raw_content
     assert turns[5].role == TurnRole.ASSISTANT
     assert turns[5].mode == parsed.mode
 
@@ -1473,7 +1478,9 @@ async def test_request_next_question_at_threshold_triggers_handover(db: DbSessio
     assert turns[5].role == TurnRole.ASSISTANT
     assert turns[6].role == TurnRole.TRANSITION
     assert turns[7].role == TurnRole.USER
-    assert "Continue with the next teaching turn" in turns[7].raw_content
+    # continue-prompt content was rewritten.
+    assert "produce" in turns[7].raw_content
+    assert "next teaching turn" in turns[7].raw_content
     assert turns[8].role == TurnRole.ASSISTANT
 
 
