@@ -17,6 +17,9 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
+from sqlalchemy import select
+
+from app.models import Domain, Topic
 from app.prompts.diagnostic_intro import build_diagnostic_intro
 from app.schemas.parsed_response import ParsedProposal, ParsedToolCall
 from app.services.parser import parse_response
@@ -54,6 +57,7 @@ type DiagnosticErrorKind = Literal[
     "parse_failed",
     "wrong_response_kind",
     "tool_handler_failed",
+    "no_data",
     "unexpected",
 ]
 
@@ -95,14 +99,23 @@ async def propose_topic(
     a terminal response lands, validates it's a ParsedProposal,
     closes the chat, and returns the proposal.
 
+    Guards against the empty-state case before any transport call:
+    if no domains exist or no topics exist, raises with
+    kind="no_data". The LLM has been observed proposing the
+    "(none yet)" placeholder string as a topic_path when the intro
+    has nothing real to offer. Prompt-level rules don't hold
+    against this. A service-layer guard is the load-bearing fix.
+
     The chat is throwaway. No persistence happens. Tool
     handlers commit their own writes (the diagnostic tools
     are read-only so this is moot, but the contract holds).
 
-    Raises DiagnosticServiceError on any failure: transport error,
-    parse error, wrong response kind, tool handler failure, or
-    close failure.
+    Raises DiagnosticServiceError on any failure: empty state,
+    transport error, parse error, wrong response kind, tool
+    handler failure, or close failure.
     """
+    _check_diagnosable_state(db)
+
     intro = await build_diagnostic_intro(db)
 
     try:
@@ -237,3 +250,35 @@ async def _close_quietly(transport: LLMTransport[Any], chat: Any) -> None:
     """
     with contextlib.suppress(Exception):
         await transport.close(chat)
+
+
+def _check_diagnosable_state(db: DbSession) -> None:
+    """Raise DiagnosticServiceError(kind="no_data") if the DB has nothing to diagnose.
+
+    Empty state is defined as no domains OR no topics. Both
+    conditions produce an unactionable proposal: the LLM has no
+    real path to suggest, but historically has emitted the
+    placeholder string from the intro as a path anyway.
+
+    Topics-but-no-domains is also empty: the diagnostic intro pulls
+    list_domains to build its EXISTING DOMAINS section. An empty
+    result there reproduces the placeholder-as-topic bug. Although
+    Topic.domain is denormalized so the data model permits orphan
+    topics, the diagnostic intro requires real Domain rows.
+
+    Domains-but-no-topics is empty because the intro's own rule
+    says proposals must be paths that exist in the topic tree.
+    """
+    has_domain = db.execute(select(Domain.id).limit(1)).scalar_one_or_none() is not None
+    has_topic = db.execute(select(Topic.id).limit(1)).scalar_one_or_none() is not None
+
+    if not has_topic:
+        raise DiagnosticServiceError(
+            "No topics exist yet. Start a learning session first to build diagnosable history.",
+            kind="no_data",
+        )
+    if not has_domain:
+        raise DiagnosticServiceError(
+            "No domains exist yet. Seed the domain table or start a session to register a domain.",
+            kind="no_data",
+        )
