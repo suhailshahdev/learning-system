@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 
 import { ApiStatus } from "@/components/api-status";
+import { DiagnoseButton } from "@/components/diagnose/diagnose-button";
 import { BlankSlate } from "@/components/home/blank-slate";
 import { ContinueLast } from "@/components/home/continue-last";
 import { DueForReview } from "@/components/home/due-for-review";
@@ -22,6 +23,7 @@ export function Home(): React.JSX.Element {
                     Topics
                 </Link>
                 <div className="flex items-center gap-4">
+                    <DiagnoseButton />
                     <ApiStatus />
                     <ModeToggle />
                 </div>
