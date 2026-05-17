@@ -54,7 +54,7 @@ from app.schemas.tools import (
     WeakTopicInfo,
     WrongAnswerSample,
 )
-from app.services.topic_crud import get_or_create_topic
+from app.services.topic_crud import get_or_create_topic_with_ancestors
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -156,19 +156,23 @@ async def create_or_update_topic(
 ) -> CreateOrUpdateTopicOutput:
     """Upsert a topic by path with optional metadata.
 
-    Calls topic_crud.get_or_create_topic for the upsert-by-path
-    semantics, then optionally updates difficulty, prerequisites,
-    and parent_id from the args.
+    Walks the leaf path so any missing ancestors are auto-created
+    with minimal metadata. If parent_path is supplied, that chain
+    is walked too and the leaf's parent_id is wired to it.
 
-    None-valued fields leave existing values unchanged. The LLM
-    can call this with just `path` to ensure a topic exists, or
-    with full metadata to set everything at once.
+    None-valued fields leave existing values unchanged on the leaf.
+    The LLM can call this with just `path` to ensure a topic exists,
+    or with full metadata to set everything at once.
+
+    Auto-created ancestors get IN_PROGRESS status and NULL difficulty.
+    The LLM can fill metadata in later by calling this handler again
+    with that ancestor as the leaf path.
     """
 
     existing_paths = db.execute(select(Topic.path).where(Topic.path == args.path)).scalar()
     is_new = existing_paths is None
 
-    topic = get_or_create_topic(db, args.path)
+    topic = get_or_create_topic_with_ancestors(db, args.path)
 
     if args.difficulty is not None:
         topic.difficulty = args.difficulty
@@ -177,13 +181,7 @@ async def create_or_update_topic(
         topic.prerequisites = [p.model_dump(mode="json") for p in args.prerequisites]
 
     if args.parent_path is not None:
-        parent = db.execute(
-            select(Topic).where(Topic.path == args.parent_path)
-        ).scalar_one_or_none()
-        if parent is None:
-            raise ToolHandlerError(
-                f"parent_path {args.parent_path!r} does not exist; create it first."
-            )
+        parent = get_or_create_topic_with_ancestors(db, args.parent_path)
         topic.parent_id = parent.id
 
     try:

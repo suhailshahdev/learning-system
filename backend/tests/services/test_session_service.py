@@ -43,6 +43,8 @@ from app.services.session_service import (
     send_user_answer,
     start_session,
 )
+from app.services.tools import registry as tool_registry
+from app.services.tools.handlers import ToolHandlerError
 from app.transport.base import TransportError, TransportResponse
 
 from tests.services.fakes import FakeTransport
@@ -1037,17 +1039,15 @@ def _create_domain_tool_call_response(domain_name: str = "GraphQL") -> Transport
     )
 
 
-def _bad_create_domain_tool_call_response() -> TransportResponse:
-    """A TOOL_CALL response whose handler will fail.
+def _create_domain_tool_call_for_failure() -> TransportResponse:
+    """A TOOL_CALL response whose handler is monkeypatched to fail.
 
-    parent_path references a topic that does not exist, which
-    create_or_update_topic rejects with ToolHandlerError.
+    The wire payload is a valid create_domain call. The companion
+    test patches app.services.tools.handlers.create_domain to raise
+    ToolHandlerError, exercising the loop's rollback-and-log path
+    without coupling to any specific handler's rejection logic.
     """
-    body = (
-        '{"name": "create_or_update_topic", '
-        '"args": {"path": "Python > Bogus > Path", '
-        '"parent_path": "Nonexistent > Topic"}}'
-    )
+    body = '{"name": "create_domain", "args": {"name": "FailMe", "kind": "framework"}}'
     return TransportResponse(
         text=f"---TOOL_CALL---\n{body}\n---END---\n",
     )
@@ -1233,17 +1233,31 @@ async def test_send_user_answer_with_chained_tool_calls_persists_all_pairs(
 
 async def test_send_user_answer_tool_handler_failure_rolls_back_and_logs(
     db: DbSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failing tool handler rolls back service writes and logs to error_log.
 
     Critical falsifying test: verifies the rollback by
     checking the user turn (added before the helper ran) is gone,
     AND verifies the error_log entry has the right kind.
+
+    The failure is injected via monkeypatch on the create_domain
+    handler so the test exercises the loop's rollback-and-log path
+    rather than depending on any specific handler having a
+    reachable rejection path from a valid wire input. The registry
+    looks the handler up by name at call time, so patching the
+    module attribute is enough to reroute the call.
     """
+
+    async def failing_create_domain(*args: object, **kwargs: object) -> object:
+        raise ToolHandlerError("simulated handler failure")
+
+    monkeypatch.setattr(tool_registry, "create_domain", failing_create_domain)
+
     transport = FakeTransport(
         responses=[
             VALID_TURN_RESPONSE,
-            _bad_create_domain_tool_call_response(),
+            _create_domain_tool_call_for_failure(),
         ]
     )
     session, _ = await start_session(
@@ -1272,7 +1286,7 @@ async def test_send_user_answer_tool_handler_failure_rolls_back_and_logs(
     )
     assert len(error_logs) == 1
     assert error_logs[0].session_id == session.id
-    assert "create_or_update_topic" in error_logs[0].context["tool_name"]
+    assert "create_domain" in error_logs[0].context["tool_name"]
 
 
 async def test_send_user_answer_tool_calls_increment_message_count(
