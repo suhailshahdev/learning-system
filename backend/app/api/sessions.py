@@ -32,6 +32,7 @@ from app.schemas.session_api import (
     StartSessionRequest,
     StartSessionResponse,
 )
+from app.schemas.transcript_api import TranscriptResponse
 from app.services.parser import ParseError
 from app.services.session_resume_service import (
     SessionResumeError,
@@ -44,6 +45,10 @@ from app.services.session_service import (
     request_next_question,
     send_user_answer,
     start_session,
+)
+from app.services.transcript_service import (
+    TranscriptServiceError,
+    get_transcript,
 )
 from app.transport.base import LLMTransport, TransportError
 
@@ -248,3 +253,33 @@ async def resume(
         raise _map_resume_error(exc) from exc
 
     return ResumeSessionResponse(session=session_resp, parsed=parsed)
+
+
+def _map_transcript_error(exc: TranscriptServiceError) -> HTTPException:
+    """Translate a transcript-service error to an HTTP exception.
+
+    not_found is 404, not_eligible is 409, malformed_parsed is
+    500 (data integrity).
+    """
+    if exc.kind == "not_found":
+        return HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if exc.kind == "not_eligible":
+        return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+@router.get("/{session_id}/transcript", response_model=TranscriptResponse)
+async def transcript(
+    session_id: str,
+    db: DbSession,
+) -> TranscriptResponse:
+    """Return the user-visible transcript of a finished session.
+
+    Available for COMPLETED, ABANDONED, and ARCHIVED sessions.
+    IN_PROGRESS sessions return 409: the live session page is the
+    right surface for an active session.
+    """
+    try:
+        return get_transcript(db=db, session_id=session_id)
+    except TranscriptServiceError as exc:
+        raise _map_transcript_error(exc) from exc
