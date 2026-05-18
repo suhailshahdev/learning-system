@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.models import Session, SessionState, SessionTurn, TurnRole
 from app.schemas.parsed_response import (
+    ParsedGrading,
     ParsedHandover,
     ParsedResponse,
     ParsedSessionEnd,
@@ -69,7 +70,7 @@ def get_session_for_resume(
         db.execute(
             select(SessionTurn)
             .where(SessionTurn.session_id == session_id)
-            .where(SessionTurn.role == TurnRole.ASSISTANT)
+            .where(SessionTurn.role.in_([TurnRole.ASSISTANT, TurnRole.GRADING]))
             .where(SessionTurn.parsed.is_not(None))
             .order_by(SessionTurn.turn_index.desc())
             .limit(1)
@@ -99,6 +100,8 @@ def _validate_parsed(raw: dict[str, object]) -> ParsedResponse:
     kind = raw.get("kind")
     if kind == "turn":
         return ParsedTurn.model_validate(raw)
+    if kind == "grading":
+        return ParsedGrading.model_validate(raw)
     if kind == "session_end":
         return ParsedSessionEnd.model_validate(raw)
     if kind == "handover":

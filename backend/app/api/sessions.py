@@ -57,11 +57,17 @@ def _map_service_error(exc: SessionServiceError) -> HTTPException:
     not-found is 404, wrong-state is 409, transport or parse
     failures are 502 (the upstream LLM produced something wrong),
     and anything else is 500.
+
+    The wrong-state checks substring-match on a known set of
+    phrases. This is brittle (see the kind-discriminator
+    pattern used by DiagnosticServiceError) and tracked as
+    deferred work. New state-conflict phrases must be added here
+    until the refactor lands.
     """
     message = exc.message
     if "not found" in message:
         return HTTPException(status.HTTP_404_NOT_FOUND, detail=message)
-    if "expected in_progress" in message:
+    if "expected in_progress" in message or "not awaiting" in message:
         return HTTPException(status.HTTP_409_CONFLICT, detail=message)
     if isinstance(exc.cause, (TransportError, ParseError)):
         return HTTPException(status.HTTP_502_BAD_GATEWAY, detail=message)

@@ -14,7 +14,10 @@ state path are deferred to later steps.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +60,8 @@ from app.transport.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from sqlalchemy.orm import Session as DbSession
 
     from app.transport.base import LLMTransport
@@ -75,6 +80,33 @@ class SessionServiceError(Exception):
         super().__init__(message)
         self.message = message
         self.cause = cause
+
+
+# Per-session asyncio locks for serializing state-mutating operations.
+# A reload mid-request can cause the browser to abandon the connection
+# while the backend keeps running, then fire a fresh request from the
+# new page load. Without serialization both end up reading the same
+# turn_index and one crashes on UNIQUE constraint. The lock keeps
+# them serial: second waits for first to complete, then runs against
+# the new state (or hits the appropriate state guard and returns
+# 409 cleanly).
+#
+# Locks are created lazily and never cleaned up. For a single-user
+# local app the dict won't grow large enough to matter. If this
+# ever runs server-side, a TTL-based cleanup goes here.
+_session_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+@asynccontextmanager
+async def _session_lock(session_id: str) -> AsyncIterator[None]:
+    """Async context manager serializing operations on one session.
+
+    All state-mutating session-service entry points wrap their work
+    in this lock. Read-only resume operations do not need it.
+    """
+    lock = _session_locks[session_id]
+    async with lock:
+        yield
 
 
 def _log_service_error(
@@ -249,16 +281,22 @@ async def send_user_answer(
 
     The session must be in IN_PROGRESS state. Either all new turns
     are written or none are.
-    """
-    session = db.get(Session, session_id)
-    if session is None:
-        raise SessionServiceError(f"Session {session_id!r} not found.")
-    if session.state is not SessionState.IN_PROGRESS:
-        raise SessionServiceError(
-            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
-        )
 
-    return await _send_within_chat(db=db, transport=transport, session=session, answer=answer)
+    Serialized per-session via _session_lock to prevent two
+    concurrent writes from racing on turn_index (reload during a
+    prefetch is the most common trigger).
+    """
+    async with _session_lock(session_id):
+        session = db.get(Session, session_id)
+        if session is None:
+            raise SessionServiceError(f"Session {session_id!r} not found.")
+        if session.state is not SessionState.IN_PROGRESS:
+            raise SessionServiceError(
+                f"Session {session_id!r} is in state {session.state.value!r}, "
+                "expected in_progress.",
+            )
+
+        return await _send_within_chat(db=db, transport=transport, session=session, answer=answer)
 
 
 async def request_next_question(
@@ -285,31 +323,45 @@ async def request_next_question(
     a cycle, not at its boundary). Returns the parsed response,
     normally a ParsedTurn. Either all new turns are written or none
     are.
+
+    Serialized per-session via _session_lock. If two requests arrive
+    in parallel (the most common case: reload during a prefetch),
+    the second waits for the first to commit, then re-evaluates the
+    last-turn guard. Once a continue has succeeded the last turn is
+    ASSISTANT not GRADING, so the second request returns a 409
+    instead of crashing on UNIQUE constraint.
     """
-    session = db.get(Session, session_id)
-    if session is None:
-        raise SessionServiceError(f"Session {session_id!r} not found.")
-    if session.state is not SessionState.IN_PROGRESS:
-        raise SessionServiceError(
-            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
-        )
+    async with _session_lock(session_id):
+        session = db.get(Session, session_id)
+        if session is None:
+            raise SessionServiceError(f"Session {session_id!r} not found.")
+        if session.state is not SessionState.IN_PROGRESS:
+            raise SessionServiceError(
+                f"Session {session_id!r} is in state {session.state.value!r}, "
+                "expected in_progress.",
+            )
 
-    last_turn = (
-        db.query(SessionTurn)
-        .filter(SessionTurn.session_id == session.id)
-        .order_by(SessionTurn.turn_index.desc())
-        .first()
-    )
-    if last_turn is None or last_turn.role is not TurnRole.GRADING:
-        raise SessionServiceError(
-            f"Session {session_id!r} is not awaiting a continue prompt; "
-            f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
-            "expected 'grading'.",
-        )
+        # Important: refresh the session row to pick up any state changes
+        # the first holder of the lock committed. Without this, the
+        # message_count check below would use stale data.
+        db.refresh(session)
 
-    if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
-        return await _continue_with_handover(db=db, transport=transport, session=session)
-    return await _continue_within_chat(db=db, transport=transport, session=session)
+        last_turn = (
+            db.query(SessionTurn)
+            .filter(SessionTurn.session_id == session.id)
+            .order_by(SessionTurn.turn_index.desc())
+            .first()
+        )
+        if last_turn is None or last_turn.role is not TurnRole.GRADING:
+            raise SessionServiceError(
+                f"Session {session_id!r} is not awaiting a continue prompt; "
+                f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
+                "expected 'grading'.",
+            )
+
+        if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
+            return await _continue_with_handover(db=db, transport=transport, session=session)
+        return await _continue_within_chat(db=db, transport=transport, session=session)
 
 
 async def _continue_within_chat(
@@ -1100,32 +1152,37 @@ async def approve_session(*, db: DbSession, session_id: str) -> Session:
     LearnedItem per pair. Marks the session COMPLETED. All writes
     commit together or roll back together.
 
+    Serialized per-session via _session_lock so approve cannot
+    race a stuck-in-flight continue from a previous page load.
+
     Returns the refreshed Session.
     """
-    session = db.get(Session, session_id)
-    if session is None:
-        raise SessionServiceError(f"Session {session_id!r} not found.")
-    if session.state is not SessionState.IN_PROGRESS:
-        raise SessionServiceError(
-            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
-        )
+    async with _session_lock(session_id):
+        session = db.get(Session, session_id)
+        if session is None:
+            raise SessionServiceError(f"Session {session_id!r} not found.")
+        if session.state is not SessionState.IN_PROGRESS:
+            raise SessionServiceError(
+                f"Session {session_id!r} is in state {session.state.value!r}, "
+                "expected in_progress.",
+            )
 
-    now = datetime.now(UTC)
-    items = _build_learned_items(db, session, now)
+        now = datetime.now(UTC)
+        items = _build_learned_items(db, session, now)
 
-    for item in items:
-        db.add(item)
+        for item in items:
+            db.add(item)
 
-    # Flush so derivation's queries see the items we just minted alongside
-    # any historical items for the same (topic, difficulty) pair.
-    db.flush()
+        # Flush so derivation's queries see the items we just minted alongside
+        # any historical items for the same (topic, difficulty) pair.
+        db.flush()
 
-    derive_assertions_for_session(db, session)
-    session.state = SessionState.COMPLETED
+        derive_assertions_for_session(db, session)
+        session.state = SessionState.COMPLETED
 
-    db.commit()
-    db.refresh(session)
-    return session
+        db.commit()
+        db.refresh(session)
+        return session
 
 
 def _build_learned_items(db: DbSession, session: Session, now: datetime) -> list[LearnedItem]:
@@ -1227,17 +1284,21 @@ async def abandon_session(*, db: DbSession, session_id: str) -> Session:
     Q/A pairs from this session stay only as session_turn rows for
     replay. Marks the session ABANDONED and commits.
 
+    Serialized per-session via _session_lock.
+
     Returns the refreshed Session.
     """
-    session = db.get(Session, session_id)
-    if session is None:
-        raise SessionServiceError(f"Session {session_id!r} not found.")
-    if session.state is not SessionState.IN_PROGRESS:
-        raise SessionServiceError(
-            f"Session {session_id!r} is in state {session.state.value!r}, expected in_progress.",
-        )
+    async with _session_lock(session_id):
+        session = db.get(Session, session_id)
+        if session is None:
+            raise SessionServiceError(f"Session {session_id!r} not found.")
+        if session.state is not SessionState.IN_PROGRESS:
+            raise SessionServiceError(
+                f"Session {session_id!r} is in state {session.state.value!r}, "
+                "expected in_progress.",
+            )
 
-    session.state = SessionState.ABANDONED
-    db.commit()
-    db.refresh(session)
-    return session
+        session.state = SessionState.ABANDONED
+        db.commit()
+        db.refresh(session)
+        return session

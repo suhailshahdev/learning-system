@@ -22,7 +22,7 @@ from app.models import (
     TransportKind,
     TurnRole,
 )
-from app.schemas.parsed_response import ParsedTurn
+from app.schemas.parsed_response import ParsedGrading, ParsedTurn
 from app.services.session_resume_service import (
     SessionResumeError,
     get_session_for_resume,
@@ -99,6 +99,28 @@ def _make_user_turn(db: DbSession, *, session_id: str, turn_index: int) -> Sessi
     return turn
 
 
+def _make_grading_turn(
+    db: DbSession,
+    *,
+    session_id: str,
+    turn_index: int,
+    parsed: dict[str, object] | None = None,
+) -> SessionTurn:
+    """Seed a GRADING turn with a parsed payload."""
+    payload = parsed if parsed is not None else _parsed_grading_payload()
+    turn = SessionTurn(
+        session_id=session_id,
+        turn_index=turn_index,
+        role=TurnRole.GRADING,
+        raw_content="<raw>",
+        parsed=payload,
+        mode=None,
+    )
+    db.add(turn)
+    db.flush()
+    return turn
+
+
 def _parsed_turn_payload(topic_path: str = "Python > Data Types > Integers") -> dict[str, object]:
     """Build a valid ParsedTurn JSON blob for storage."""
     return {
@@ -116,6 +138,16 @@ def _parsed_turn_payload(topic_path: str = "Python > Data Types > Integers") -> 
         "requirements": None,
         "followup": None,
         "tags": [],
+    }
+
+
+def _parsed_grading_payload(verdict: str = "correct") -> dict[str, object]:
+    """Build a valid ParsedGrading JSON blob for storage."""
+    return {
+        "kind": "grading",
+        "verdict": verdict,
+        "explanation": "Right answer. Integer division truncates.",
+        "explanation_code": None,
     }
 
 
@@ -153,6 +185,58 @@ async def test_resume_skips_user_and_system_turns(db: DbSession) -> None:
 
     assert session_resp.id == session.id
     assert isinstance(parsed, ParsedTurn)
+
+
+async def test_resume_returns_grading_when_it_is_the_latest_turn(db: DbSession) -> None:
+    """Mid-grading reload: latest turn is GRADING, resume returns it.
+
+    Falsifying test for the bug where reload during the post-grading
+    pre-continue window returned the previous teaching question
+    instead of the grading the user was actually looking at.
+    Sequence: ASSISTANT(1), USER(2), GRADING(3). Latest by index
+    is the grading turn.
+    """
+    topic = _make_topic(db)
+    session = _make_session(db, topic_id=topic.id)
+    _make_assistant_turn(db, session_id=session.id, turn_index=1, parsed=_parsed_turn_payload())
+    _make_user_turn(db, session_id=session.id, turn_index=2)
+    _make_grading_turn(db, session_id=session.id, turn_index=3)
+    db.commit()
+
+    session_resp, parsed = get_session_for_resume(db=db, session_id=session.id)
+
+    assert session_resp.id == session.id
+    assert isinstance(parsed, ParsedGrading)
+    assert parsed.verdict == "correct"
+
+
+async def test_resume_returns_next_turn_when_grading_followed_by_next_teaching_turn(
+    db: DbSession,
+) -> None:
+    """Post-continue reload: latest is ASSISTANT, returns the next teaching turn.
+
+    Sequence: ASSISTANT(1), USER(2), GRADING(3), ASSISTANT(4).
+    The next teaching turn at index 4 is the latest, not the
+    grading at index 3.
+    """
+    topic = _make_topic(db)
+    session = _make_session(db, topic_id=topic.id)
+    _make_assistant_turn(db, session_id=session.id, turn_index=1, parsed=_parsed_turn_payload())
+    _make_user_turn(db, session_id=session.id, turn_index=2)
+    _make_grading_turn(db, session_id=session.id, turn_index=3)
+    _make_assistant_turn(
+        db,
+        session_id=session.id,
+        turn_index=4,
+        parsed=_parsed_turn_payload(topic_path="Python > Functions > Closures"),
+    )
+    db.commit()
+
+    session_resp, parsed = get_session_for_resume(db=db, session_id=session.id)
+
+    assert session_resp.id == session.id
+    assert isinstance(parsed, ParsedTurn)
+    assert parsed.topic_path == "Python > Functions > Closures"
 
 
 async def test_resume_404_for_unknown_session(db: DbSession) -> None:
