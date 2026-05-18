@@ -74,10 +74,25 @@ function SessionRow({ session }: SessionRowProps): React.JSX.Element {
         </div>
     );
 
+    // In-progress sessions route to the live session page.
+    // Completed and abandoned sessions route to the read-only
+    // transcript. Archived sessions stay inert until archive
+    // browsing lands as its own surface.
     if (session.state === "in_progress") {
         return (
             <Link
                 to={`/session/${session.id}`}
+                className="block rounded-md p-2 transition-colors hover:bg-accent"
+            >
+                {content}
+            </Link>
+        );
+    }
+
+    if (session.state === "completed" || session.state === "abandoned") {
+        return (
+            <Link
+                to={`/session/${session.id}/transcript`}
                 className="block rounded-md p-2 transition-colors hover:bg-accent"
             >
                 {content}

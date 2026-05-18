@@ -13,3 +13,4 @@ export * from "@/lib/api/health";
 export * from "@/lib/api/home";
 export * from "@/lib/api/sessions";
 export * from "@/lib/api/topics";
+export * from "@/lib/api/transcript";
