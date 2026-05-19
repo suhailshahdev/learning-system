@@ -26,9 +26,14 @@ export function Topics(): React.JSX.Element {
     return (
         <div className="min-h-svh bg-background text-foreground">
             <header className="flex items-center justify-between gap-4 p-4">
-                <Link to="/" className="text-sm underline underline-offset-4">
-                    Home
-                </Link>
+                <nav className="flex items-center gap-4 text-sm">
+                    <Link to="/" className="underline underline-offset-4">
+                        Home
+                    </Link>
+                    <Link to="/sessions" className="underline underline-offset-4">
+                        Sessions
+                    </Link>
+                </nav>
                 <div className="flex items-center gap-4">
                     <ApiStatus />
                     <ModeToggle />
