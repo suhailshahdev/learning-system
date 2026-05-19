@@ -25,6 +25,8 @@ and failed-first ordering modes are deferred to a follow-up.
 
 from __future__ import annotations
 
+import contextlib
+import json
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -39,11 +41,21 @@ from app.models import (
     TransportKind,
     TurnRole,
 )
-from app.schemas.parsed_response import ParsedTurn
+from app.prompts.retest_grading_intro import (
+    build_retest_grading_intro,
+    build_retest_grading_prompt,
+)
+from app.schemas.parsed_response import ParsedGrading, ParsedToolCall, ParsedTurn
+from app.services.parser import parse_response
 from app.services.session_service import OPEN_ANSWER_PLACEHOLDER
+from app.transport.base import TransportError, TransportResponse
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from sqlalchemy.orm import Session as DbSession
+
+    from app.transport.base import LLMTransport
 
 
 class RetestServiceError(Exception):
@@ -276,3 +288,112 @@ def _count_answered_questions(db: DbSession, session_id: str) -> int:
             count += 1
             expecting_user = False
     return count
+
+
+async def grade_retest_answer(
+    *,
+    transport: LLMTransport[Any],
+    question: str,
+    expected_answer: str | None,
+    user_answer: str,
+) -> ParsedGrading:
+    """Grade one retest answer via an LLM call on a fresh chat.
+
+    Opens a new chat with the retest grading intro, sends the
+    per-question payload, parses the response, closes the chat.
+    Stateless: no chat handle is returned. Each call is
+    independent.
+
+    The transport is contacted directly. No DB writes happen
+    here. The caller persists the resulting GRADING turn. This
+    separation lets approve_session walk turns and pair them
+    without the grading service needing to know about session
+    structure.
+
+    Raises RetestServiceError when:
+    - the transport call fails (kind: "transport_failed")
+    - the response is unparseable (kind: "parse_failed")
+    - the response is the wrong shape, e.g. a teaching turn
+      or a tool call (kind: "wrong_response_kind")
+
+    Tool calls are explicitly rejected: the grading intro
+    advertises no tools, but a misbehaving LLM might emit a
+    TOOL_CALL block anyway. Treating it as a wrong-shape
+    response keeps the grading call closed.
+    """
+    intro = build_retest_grading_intro()
+    prompt = build_retest_grading_prompt(
+        question=question,
+        expected_answer=expected_answer,
+        user_answer=user_answer,
+    )
+
+    try:
+        chat, response = await transport.start_new_chat(intro, prompt)
+    except TransportError as e:
+        raise RetestServiceError(
+            "transport_failed",
+            f"Transport failed during retest grading: {e.message}",
+        ) from e
+
+    try:
+        parsed = _response_to_parsed(response)
+    except Exception as e:
+        # Best-effort close before raising. If close fails too,
+        # the original parse error is the more useful signal.
+        with contextlib.suppress(TransportError):
+            await transport.close(chat)
+        raise RetestServiceError(
+            "parse_failed",
+            f"Parse failed on retest grading response: {e}",
+        ) from e
+
+    # Always close the chat before returning, success or otherwise.
+    # If close fails the parsed grading is still useful. The close
+    # failure is silently dropped.
+    with contextlib.suppress(TransportError):
+        await transport.close(chat)
+
+    if isinstance(parsed, ParsedToolCall):
+        tool_names = [c.name for c in parsed.calls]
+        raise RetestServiceError(
+            "wrong_response_kind",
+            f"Retest grading response contained tool calls {tool_names!r}; "
+            "the grading flow advertises no tools",
+        )
+
+    if not isinstance(parsed, ParsedGrading):
+        raise RetestServiceError(
+            "wrong_response_kind",
+            f"Expected ParsedGrading from retest grading, got {parsed.kind!r}",
+        )
+
+    return parsed
+
+
+def _response_to_parsed(response: TransportResponse) -> ParsedGrading | ParsedToolCall:
+    """Translate a TransportResponse into a parsed shape for grading.
+
+    Same dispatch as session_service._response_to_parsed: native
+    tool_calls take precedence over text parsing. Returns
+    ParsedGrading or ParsedToolCall (the only two shapes we
+    accept here), other parsed kinds will fail in the caller's
+    isinstance check and raise wrong_response_kind.
+
+    Local to retest_service to avoid a cross-module import and
+    because the dispatch is short enough that the duplication
+    is the smaller cost.
+    """
+    if response.tool_calls:
+        calls = list(response.tool_calls)
+        raw_text = json.dumps([c.model_dump(mode="json") for c in calls])
+        return ParsedToolCall(calls=calls, raw_text=raw_text)
+    parsed = parse_response(response.text)
+    if not isinstance(parsed, (ParsedGrading, ParsedToolCall)):
+        # Parser produced something neither grading nor tool-call.
+        # Wrap as a not-shaped-for-grading signal that the caller
+        # converts to wrong_response_kind. We do not raise here
+        # because the caller already has the isinstance check
+        # and the error message matters at that layer.
+        return parsed  # type: ignore[return-value]
+    return parsed
