@@ -23,6 +23,8 @@ from app.api.deps import (  # noqa: TC001
     PlaywrightTransportDep,
 )
 from app.models import Session, TransportKind
+from app.models.enums import SessionState  # noqa: TC001
+from app.schemas.browse_api import BrowseResponse
 from app.schemas.session_api import (
     ContinueSessionResponse,
     ResumeSessionResponse,
@@ -33,6 +35,7 @@ from app.schemas.session_api import (
     StartSessionResponse,
 )
 from app.schemas.transcript_api import TranscriptResponse
+from app.services.browse_service import list_sessions
 from app.services.parser import ParseError
 from app.services.session_resume_service import (
     SessionResumeError,
@@ -97,6 +100,20 @@ def _pick_transport(
     if kind is TransportKind.CLAUDE_PLAYWRIGHT:
         return playwright
     return deepseek
+
+
+@router.get("", response_model=BrowseResponse)
+async def browse(
+    db: DbSession,
+    state: SessionState | None = None,
+) -> BrowseResponse:
+    """List sessions sorted by created_at desc, optionally filtered by state.
+
+    Hard limit of 50 rows. limit_reached on the response signals
+    whether more sessions exist past the cap. The frontend can show
+    a "more sessions exist" hint when True.
+    """
+    return list_sessions(db=db, state=state)
 
 
 @router.post(
