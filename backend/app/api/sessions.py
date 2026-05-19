@@ -31,12 +31,18 @@ from app.schemas.session_api import (
     SendTurnRequest,
     SendTurnResponse,
     SessionResponse,
+    StartRetestRequest,
+    StartRetestResponse,
     StartSessionRequest,
     StartSessionResponse,
 )
 from app.schemas.transcript_api import TranscriptResponse
 from app.services.browse_service import list_sessions
 from app.services.parser import ParseError
+from app.services.retest_service import (
+    RetestServiceError,
+    start_retest,
+)
 from app.services.session_resume_service import (
     SessionResumeError,
     get_session_for_resume,
@@ -237,6 +243,52 @@ async def abandon(
         raise _map_service_error(exc) from exc
 
     return SessionResponse.model_validate(abandoned)
+
+
+def _map_retest_error(exc: RetestServiceError) -> HTTPException:
+    """Translate a retest-service error to an HTTP exception.
+
+    not_found is 404, not_eligible and empty_source are both 409
+    (state conflict on the source session).
+    """
+    if exc.kind == "not_found":
+        return HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if exc.kind in ("not_eligible", "empty_source"):
+        return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+@router.post(
+    "/{source_session_id}/retest",
+    response_model=StartRetestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def retest(
+    source_session_id: str,
+    body: StartRetestRequest,
+    db: DbSession,
+) -> StartRetestResponse:
+    """Start a retest of the named completed source session.
+
+    Creates a new IN_PROGRESS session linked to the source via
+    parent_session_id. The first question is reconstructed from
+    the source's first LearnedItem and surfaces synthetically.
+    No transport contacted here. The lazy chat opens later if a
+    free-form question needs LLM grading.
+    """
+    try:
+        session, first_turn = start_retest(
+            db=db,
+            source_session_id=source_session_id,
+            transport_kind=body.transport_kind,
+        )
+    except RetestServiceError as exc:
+        raise _map_retest_error(exc) from exc
+
+    return StartRetestResponse(
+        session=SessionResponse.model_validate(session),
+        first_turn=first_turn,
+    )
 
 
 def _map_resume_error(exc: SessionResumeError) -> HTTPException:

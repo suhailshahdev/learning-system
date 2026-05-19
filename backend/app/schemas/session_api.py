@@ -75,6 +75,35 @@ class StartSessionResponse(BaseModel):
     first_turn: ParsedTurn
 
 
+class StartRetestRequest(BaseModel):
+    """Body for POST /sessions/{source_id}/retest.
+
+    transport_kind is the user's choice for which LLM to use when
+    grading fires. Free-form mode questions need an LLM, deterministic
+    mode questions never trigger a transport call. The choice is stored
+    on the new session row regardless so the retest's transport is
+    consistent across all grading events.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    transport_kind: TransportKind
+
+
+class StartRetestResponse(BaseModel):
+    """Response for POST /sessions/{source_id}/retest.
+
+    Same shape as StartSessionResponse so the frontend can reuse the
+    live-session start page for retests. first_turn is reconstructed
+    from the source's first LearnedItem, not LLM-generated.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    session: SessionResponse
+    first_turn: ParsedTurn
+
+
 class ResumeSessionResponse(BaseModel):
     """Response for GET /sessions/{id}.
 
