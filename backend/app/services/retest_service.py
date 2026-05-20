@@ -45,9 +45,19 @@ from app.prompts.retest_grading_intro import (
     build_retest_grading_intro,
     build_retest_grading_prompt,
 )
-from app.schemas.parsed_response import ParsedGrading, ParsedToolCall, ParsedTurn
+from app.schemas.parsed_response import (
+    ParsedGrading,
+    ParsedResponse,
+    ParsedSessionEnd,
+    ParsedToolCall,
+    ParsedTurn,
+)
 from app.services.parser import parse_response
-from app.services.session_service import OPEN_ANSWER_PLACEHOLDER
+from app.services.session_service import (
+    OPEN_ANSWER_PLACEHOLDER,
+    SessionServiceError,
+    _log_service_error,
+)
 from app.transport.base import TransportError, TransportResponse
 
 if TYPE_CHECKING:
@@ -397,3 +407,210 @@ def _response_to_parsed(response: TransportResponse) -> ParsedGrading | ParsedTo
         # and the error message matters at that layer.
         return parsed  # type: ignore[return-value]
     return parsed
+
+
+async def answer_retest_question(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    session: Session,
+    answer: str,
+) -> ParsedResponse:
+    """Handle a user answer on a retest session.
+
+    Called by session_service.send_user_answer when it detects
+    the session has parent_session_id set. Pulls the question
+    the user just answered (the latest synthetic ASSISTANT turn
+    on this retest), calls grade_retest_answer on a fresh chat,
+    persists USER + GRADING turns, returns the parsed grading.
+
+    Same all-or-nothing transactional shape as
+    session_service._send_within_chat: either both new turns
+    are written or none are, and error_log writes commit
+    cleanly because we add no rows before the transport call.
+
+    Returns ParsedGrading on success. The retest grading
+    intro produces only grading responses. Tool calls and
+    teaching turns are rejected by grade_retest_answer with
+    wrong_response_kind.
+    """
+    # Read the question the user is answering. The most recent
+    # ASSISTANT turn with parsed.kind="turn" is the active question
+    # on this retest. We do not write anything until grade succeeds.
+    current_question = _current_retest_question(db, session.id)
+    if current_question is None:
+        raise SessionServiceError(
+            f"Session {session.id!r} has no active retest question to answer.",
+        )
+
+    try:
+        grading = await grade_retest_answer(
+            transport=transport,
+            question=current_question.question,
+            expected_answer=current_question.expected_answer,
+            user_answer=answer,
+        )
+    except RetestServiceError as e:
+        _log_service_error(
+            db,
+            kind="retest.grade.failed",
+            message=str(e),
+            session_id=session.id,
+            context={
+                "transport_kind": session.transport_kind.value,
+                "error_kind": e.kind,
+            },
+        )
+        # No rollback needed: we have not added any rows yet.
+        raise SessionServiceError(
+            f"Retest grading failed: {e}",
+            cause=e,
+        ) from e
+
+    # Grading succeeded. Persist the two new turns and commit.
+    next_index = _next_turn_index(db, session.id)
+    db.add(
+        SessionTurn(
+            session_id=session.id,
+            turn_index=next_index,
+            role=TurnRole.USER,
+            raw_content=answer,
+            parsed=None,
+            mode=None,
+        )
+    )
+    db.add(
+        SessionTurn(
+            session_id=session.id,
+            turn_index=next_index + 1,
+            role=TurnRole.GRADING,
+            raw_content=_grading_raw_content(grading),
+            parsed=grading.model_dump(mode="json"),
+            mode=None,
+        )
+    )
+
+    db.commit()
+    db.refresh(session)
+    return grading
+
+
+async def next_retest_question(
+    *,
+    db: DbSession,
+    session: Session,
+) -> ParsedResponse:
+    """Pull and persist the next synthetic question on a retest session.
+
+    Called by session_service.request_next_question when it
+    detects the session has parent_session_id set. No transport
+    contact: questions come from the source session's
+    LearnedItems via get_next_retest_turn.
+
+    Returns ParsedTurn when there is a next question. Returns
+    ParsedSessionEnd when source items are exhausted (the user
+    has answered every question and approve will mint the
+    retest's learned items).
+    """
+    next_turn = get_next_retest_turn(db, session.id)
+
+    if next_turn is None:
+        # Source exhausted. Surface session-end so the frontend
+        # shows the approve flow. We do not persist a teaching
+        # turn here. ParsedSessionEnd carries everything needed.
+        return ParsedSessionEnd(summary=_retest_completion_summary(db, session))
+
+    next_index = _next_turn_index(db, session.id)
+    db.add(
+        SessionTurn(
+            session_id=session.id,
+            turn_index=next_index,
+            role=TurnRole.ASSISTANT,
+            raw_content=f"[synthetic retest turn at retest-progress index {next_index}]",
+            parsed=next_turn.model_dump(mode="json"),
+            mode=next_turn.mode,
+        )
+    )
+
+    db.commit()
+    db.refresh(session)
+    return next_turn
+
+
+def _current_retest_question(db: DbSession, session_id: str) -> ParsedTurn | None:
+    """Return the most recent synthetic teaching turn on this retest.
+
+    Walks turns descending, finds the latest ASSISTANT turn with
+    parsed.kind="turn". Returns None when no such turn exists
+    (shouldn't happen on a properly-started retest, but defend
+    rather than crash).
+    """
+    turns = (
+        db.execute(
+            select(SessionTurn)
+            .where(SessionTurn.session_id == session_id)
+            .where(SessionTurn.role == TurnRole.ASSISTANT)
+            .order_by(SessionTurn.turn_index.desc())
+        )
+        .scalars()
+        .all()
+    )
+    for turn in turns:
+        if turn.parsed is not None and turn.parsed.get("kind") == "turn":
+            return ParsedTurn.model_validate(turn.parsed)
+    return None
+
+
+def _next_turn_index(db: DbSession, session_id: str) -> int:
+    """Return the next available turn_index for the given session.
+
+    Local duplicate of session_service._next_turn_index to avoid
+    crossing the module boundary for a four-line helper.
+    """
+    last = (
+        db.execute(
+            select(SessionTurn)
+            .where(SessionTurn.session_id == session_id)
+            .order_by(SessionTurn.turn_index.desc())
+            .limit(1)
+        )
+        .scalars()
+        .one_or_none()
+    )
+    return 0 if last is None else last.turn_index + 1
+
+
+def _grading_raw_content(grading: ParsedGrading) -> str:
+    """Human-readable raw_content for a retest GRADING turn.
+
+    The parsed JSON carries the structured grading. raw_content
+    surfaces a short summary for CLI inspection and transcript
+    rendering.
+    """
+    return f"[retest grading: {grading.verdict.value}]\n{grading.explanation}"
+
+
+def _retest_completion_summary(db: DbSession, session: Session) -> str:
+    """Generate the session-end summary shown when retest source exhausted.
+
+    Counts the source's LearnedItems and the retest's USER answer
+    turns to produce a concise completion message. Read-only.
+    """
+    source_count = (
+        db.execute(select(LearnedItem).where(LearnedItem.session_id == session.parent_session_id))
+        .scalars()
+        .all()
+    )
+    answered = (
+        db.execute(
+            select(SessionTurn)
+            .where(SessionTurn.session_id == session.id)
+            .where(SessionTurn.role == TurnRole.USER)
+        )
+        .scalars()
+        .all()
+    )
+    return (
+        f"Retest complete: {len(answered)} of {len(source_count)} questions answered. "
+        "Approve to record this retest."
+    )

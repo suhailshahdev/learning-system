@@ -25,15 +25,26 @@ from app.models import (
     TransportKind,
     TurnRole,
 )
-from app.schemas.parsed_response import ParsedGrading
+from app.schemas.parsed_response import (
+    ParsedGrading,
+    ParsedSessionEnd,
+    ParsedTurn,
+)
 from app.schemas.tools import GetWeakTopicsCall, GetWeakTopicsInput
 from app.services.retest_service import (
     RetestServiceError,
+    answer_retest_question,
     get_next_retest_turn,
     grade_retest_answer,
+    next_retest_question,
     start_retest,
 )
-from app.services.session_service import OPEN_ANSWER_PLACEHOLDER
+from app.services.session_service import (
+    OPEN_ANSWER_PLACEHOLDER,
+    SessionServiceError,
+    request_next_question,
+    send_user_answer,
+)
 from app.transport.base import TransportError, TransportResponse
 
 from tests.services.fakes import FakeTransport
@@ -731,3 +742,284 @@ async def test_grade_retest_answer_tool_call_rejected_as_wrong_kind() -> None:
         )
 
     assert exc_info.value.kind == "wrong_response_kind"
+
+
+# ---------- answer_retest_question (dispatch path) ----------
+
+
+async def test_answer_retest_persists_user_and_grading_turns(db: DbSession) -> None:
+    """A retest answer persists USER + GRADING turns and commits."""
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="What is 7 // 2?",
+        answer="3",
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    transport = FakeTransport([GRADING_RESPONSE_CORRECT])
+    grading = await answer_retest_question(db=db, transport=transport, session=retest, answer="3")
+
+    assert isinstance(grading, ParsedGrading)
+    assert grading.verdict == GradingVerdict.CORRECT
+
+    db.refresh(retest)
+    turns = sorted(retest.turns, key=lambda t: t.turn_index)
+    # Index 0: synthetic ASSISTANT. Index 1: USER answer. Index 2: GRADING.
+    assert len(turns) == 3
+    assert turns[1].role is TurnRole.USER
+    assert turns[1].raw_content == "3"
+    assert turns[2].role is TurnRole.GRADING
+    assert turns[2].parsed is not None
+    assert turns[2].parsed["verdict"] == "correct"
+
+
+async def test_answer_retest_grading_failure_does_not_persist_user_turn(
+    db: DbSession,
+) -> None:
+    """Grading failure leaves no USER turn behind.
+
+    Falsifying test for the safe-ordering rule. If we persisted
+    USER first then graded, a grading failure would leave an
+    orphan USER turn. The current implementation grades first
+    and persists after, so a failure means zero new turns are written.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(db, session_id=source.id, topic_id=topic.id)
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    transport = FakeTransport([], raise_on_send=TransportError("boom"))
+
+    with pytest.raises(SessionServiceError):
+        await answer_retest_question(db=db, transport=transport, session=retest, answer="3")
+
+    db.refresh(retest)
+    turns = sorted(retest.turns, key=lambda t: t.turn_index)
+    # Only the synthetic ASSISTANT turn from start_retest survives.
+    assert len(turns) == 1
+    assert turns[0].role is TurnRole.ASSISTANT
+
+
+async def test_answer_retest_open_graded_passes_none_to_grader(db: DbSession) -> None:
+    """OPEN_ANSWER_PLACEHOLDER items present expected_answer=None.
+
+    Falsifying test for the round-trip: a source LearnedItem with
+    answer=OPEN_ANSWER_PLACEHOLDER must produce expected_answer=None
+    in the grading call, not the literal placeholder string.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        mode=LearningMode.EXPLAIN_BACK,
+        answer=OPEN_ANSWER_PLACEHOLDER,
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    transport = FakeTransport([GRADING_RESPONSE_OPEN])
+    await answer_retest_question(
+        db=db, transport=transport, session=retest, answer="my explanation"
+    )
+
+    first_prompt = transport.chats[0].messages_sent[1]
+    # Should mention NONE (open-graded), not the placeholder.
+    assert "NONE" in first_prompt
+    assert OPEN_ANSWER_PLACEHOLDER not in first_prompt
+
+
+# ---------- next_retest_question (dispatch path) ----------
+
+
+async def test_next_retest_question_persists_next_synthetic_turn(db: DbSession) -> None:
+    """Pulling next question persists a synthetic ASSISTANT turn."""
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="First question",
+        created_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="Second question",
+        created_at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+    # Simulate the user answering the first question.
+    _add_user_turn(db, session_id=retest.id, turn_index=1)
+    # Simulate a grading turn following the user's answer.
+    grading_turn = SessionTurn(
+        session_id=retest.id,
+        turn_index=2,
+        role=TurnRole.GRADING,
+        raw_content="<grading>",
+        parsed={
+            "kind": "grading",
+            "verdict": "correct",
+            "explanation": "Right.",
+            "explanation_code": None,
+        },
+        mode=None,
+    )
+    db.add(grading_turn)
+    db.commit()
+
+    result = await next_retest_question(db=db, session=retest)
+
+    assert isinstance(result, ParsedTurn)
+    assert result.question == "Second question"
+
+    db.refresh(retest)
+    turns = sorted(retest.turns, key=lambda t: t.turn_index)
+    # Index 0: synthetic q1. Index 1: USER. Index 2: GRADING. Index 3: synthetic q2.
+    assert len(turns) == 4
+    assert turns[3].role is TurnRole.ASSISTANT
+    assert turns[3].parsed is not None
+    assert turns[3].parsed["question"] == "Second question"
+
+
+async def test_next_retest_question_returns_session_end_when_exhausted(
+    db: DbSession,
+) -> None:
+    """All source items answered: next question returns ParsedSessionEnd."""
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(db, session_id=source.id, topic_id=topic.id, question="Only question")
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+    # Simulate the user answering the only question.
+    _add_user_turn(db, session_id=retest.id, turn_index=1)
+    grading_turn = SessionTurn(
+        session_id=retest.id,
+        turn_index=2,
+        role=TurnRole.GRADING,
+        raw_content="<grading>",
+        parsed={
+            "kind": "grading",
+            "verdict": "correct",
+            "explanation": "Right.",
+            "explanation_code": None,
+        },
+        mode=None,
+    )
+    db.add(grading_turn)
+    db.commit()
+
+    result = await next_retest_question(db=db, session=retest)
+
+    assert isinstance(result, ParsedSessionEnd)
+    assert "1 of 1" in result.summary
+
+
+# ---------- dispatch via session_service ----------
+
+
+async def test_send_user_answer_dispatches_retest_path(db: DbSession) -> None:
+    """send_user_answer detects parent_session_id and routes to retest path.
+
+    Falsifying test for the dispatch: a session with
+    parent_session_id set must NOT call the live-session
+    transport methods (resume_chat, send). FakeTransport's
+    chats list records every call. The retest path uses
+    start_new_chat only, no resume_chat.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(db, session_id=source.id, topic_id=topic.id)
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    transport = FakeTransport([GRADING_RESPONSE_CORRECT])
+    result = await send_user_answer(db=db, transport=transport, session_id=retest.id, answer="3")
+
+    assert isinstance(result, ParsedGrading)
+    # Retest path opened exactly one fresh chat via start_new_chat.
+    # No resume_chat means no chat carries resumed_from metadata.
+    assert len(transport.chats) == 1
+    assert transport.chats[0].resumed_from is None
+
+
+async def test_request_next_question_dispatches_retest_path(db: DbSession) -> None:
+    """request_next_question detects parent_session_id and routes to retest path.
+
+    The retest path makes no transport calls (questions come from
+    source LearnedItems). Falsifying test: assert the transport's
+    chat list stays empty.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="First",
+        created_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="Second",
+        created_at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+    _add_user_turn(db, session_id=retest.id, turn_index=1)
+    grading_turn = SessionTurn(
+        session_id=retest.id,
+        turn_index=2,
+        role=TurnRole.GRADING,
+        raw_content="<grading>",
+        parsed={
+            "kind": "grading",
+            "verdict": "correct",
+            "explanation": "Right.",
+            "explanation_code": None,
+        },
+        mode=None,
+    )
+    db.add(grading_turn)
+    db.commit()
+
+    transport = FakeTransport([])
+    result = await request_next_question(db=db, transport=transport, session_id=retest.id)
+
+    assert isinstance(result, ParsedTurn)
+    assert result.question == "Second"
+    # Retest path uses no transport calls.
+    assert len(transport.chats) == 0

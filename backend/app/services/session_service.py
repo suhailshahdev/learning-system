@@ -296,6 +296,12 @@ async def send_user_answer(
                 "expected in_progress.",
             )
 
+        if session.parent_session_id is not None:
+            from app.services.retest_service import answer_retest_question  # noqa: PLC0415
+
+            return await answer_retest_question(
+                db=db, transport=transport, session=session, answer=answer
+            )
         return await _send_within_chat(db=db, transport=transport, session=session, answer=answer)
 
 
@@ -358,6 +364,11 @@ async def request_next_question(
                 f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
                 "expected 'grading'.",
             )
+
+        if session.parent_session_id is not None:
+            from app.services.retest_service import next_retest_question  # noqa: PLC0415
+
+            return await next_retest_question(db=db, session=session)
 
         if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
             return await _continue_with_handover(db=db, transport=transport, session=session)
