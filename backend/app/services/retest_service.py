@@ -61,6 +61,7 @@ from app.services.session_service import (
 from app.transport.base import TransportError, TransportResponse
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from typing import Any
 
     from sqlalchemy.orm import Session as DbSession
@@ -614,3 +615,35 @@ def _retest_completion_summary(db: DbSession, session: Session) -> str:
         f"Retest complete: {len(answered)} of {len(source_count)} questions answered. "
         "Approve to record this retest."
     )
+
+
+def mark_source_items_reviewed(
+    db: DbSession,
+    retest_session: Session,
+    now: datetime,
+) -> None:
+    """Bump last_reviewed_at on the source session's learned items.
+
+    Called from approve_session when a retest session is approved.
+    The retest revisited the source's material, so the source's
+    items are now "reviewed as of now" for the review-queue's
+    purposes.
+
+    Runs inside approve_session's transaction (no commit here).
+    The caller commits items, derived assertions, and this bump
+    together.
+
+    No-op when the retest's parent has no learned items, which
+    cannot happen on a properly-started retest (start_retest
+    rejects empty sources) but is defended against rather than
+    assumed.
+    """
+    source_items = (
+        db.execute(
+            select(LearnedItem).where(LearnedItem.session_id == retest_session.parent_session_id)
+        )
+        .scalars()
+        .all()
+    )
+    for item in source_items:
+        item.last_reviewed_at = now

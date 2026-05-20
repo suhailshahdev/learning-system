@@ -1189,6 +1189,18 @@ async def approve_session(*, db: DbSession, session_id: str) -> Session:
         db.flush()
 
         derive_assertions_for_session(db, session)
+
+        # Retest sessions additionally bump their source session's items'
+        # last_reviewed_at, so the review queue reflects that this material
+        # was revisited. Inside the same transaction: the bump commits or
+        # rolls back together with the minted items.
+        if session.parent_session_id is not None:
+            from app.services.retest_service import (  # noqa: PLC0415
+                mark_source_items_reviewed,
+            )
+
+            mark_source_items_reviewed(db, session, now)
+
         session.state = SessionState.COMPLETED
 
         db.commit()

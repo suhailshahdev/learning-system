@@ -36,12 +36,14 @@ from app.services.retest_service import (
     answer_retest_question,
     get_next_retest_turn,
     grade_retest_answer,
+    mark_source_items_reviewed,
     next_retest_question,
     start_retest,
 )
 from app.services.session_service import (
     OPEN_ANSWER_PLACEHOLDER,
     SessionServiceError,
+    approve_session,
     request_next_question,
     send_user_answer,
 )
@@ -1023,3 +1025,151 @@ async def test_request_next_question_dispatches_retest_path(db: DbSession) -> No
     assert result.question == "Second"
     # Retest path uses no transport calls.
     assert len(transport.chats) == 0
+
+
+# ---------- approve: parent last_reviewed_at bump ----------
+
+
+async def test_approve_retest_bumps_parent_last_reviewed_at(db: DbSession) -> None:
+    """Approving a retest updates the source items' last_reviewed_at.
+
+    Source item starts with last_reviewed_at far in the past. After
+    a full retest cycle (answer + grade + approve), the source
+    item's last_reviewed_at advances to approximately now.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    old_time = datetime(2026, 1, 1, tzinfo=UTC)
+    source_item = _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="What is 7 // 2?",
+        answer="3",
+    )
+    source_item.last_reviewed_at = old_time
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    # Answer the synthetic first question.
+    transport = FakeTransport([GRADING_RESPONSE_CORRECT])
+    await answer_retest_question(db=db, transport=transport, session=retest, answer="3")
+
+    await approve_session(db=db, session_id=retest.id)
+
+    db.refresh(source_item)
+    assert source_item.last_reviewed_at is not None
+    # SQLite drops tz info on read, so the stored value comes
+    # back naive. Compare against the naive form of old_time.
+    assert source_item.last_reviewed_at > old_time.replace(tzinfo=None)
+
+
+async def test_approve_retest_mints_items_on_retest_session(db: DbSession) -> None:
+    """Approving a retest mints LearnedItems on the retest, not the source.
+
+    The source keeps its original items unchanged (count stays the
+    same). The retest session gets its own new items.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="What is 7 // 2?",
+        answer="3",
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+    transport = FakeTransport([GRADING_RESPONSE_CORRECT])
+    await answer_retest_question(db=db, transport=transport, session=retest, answer="3")
+
+    await approve_session(db=db, session_id=retest.id)
+
+    source_items = db.query(LearnedItem).filter(LearnedItem.session_id == source.id).all()
+    retest_items = db.query(LearnedItem).filter(LearnedItem.session_id == retest.id).all()
+    # Source unchanged, retest minted its own.
+    assert len(source_items) == 1
+    assert len(retest_items) == 1
+    # The retest item carries the user's new answer and the grading verdict.
+    assert retest_items[0].your_answer == "3"
+    assert retest_items[0].grading_verdict is GradingVerdict.CORRECT
+
+
+async def test_approve_retest_carries_grading_verdict_onto_minted_item(
+    db: DbSession,
+) -> None:
+    """An incorrect retest answer mints an item with the incorrect verdict.
+
+    Confirms the verdict from the GRADING turn flows onto the
+    LearnedItem via the existing _build_learned_items pairing.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    _make_learned_item(
+        db,
+        session_id=source.id,
+        topic_id=topic.id,
+        question="What is 7 // 2?",
+        answer="3",
+    )
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+    transport = FakeTransport([GRADING_RESPONSE_INCORRECT])
+    await answer_retest_question(db=db, transport=transport, session=retest, answer="3.5")
+
+    await approve_session(db=db, session_id=retest.id)
+
+    retest_items = db.query(LearnedItem).filter(LearnedItem.session_id == retest.id).all()
+    assert len(retest_items) == 1
+    assert retest_items[0].grading_verdict is GradingVerdict.INCORRECT
+    assert retest_items[0].your_answer == "3.5"
+
+
+async def test_mark_source_items_reviewed_updates_all_source_items(
+    db: DbSession,
+) -> None:
+    """The helper bumps every source item, not just the first.
+
+    Falsifying test for the bump scope: a source with three items
+    should have all three bumped, not only the one the retest got
+    to before approval.
+    """
+    topic = _make_topic(db)
+    source = _make_source_session(db, topic_id=topic.id)
+    old_time = datetime(2026, 1, 1, tzinfo=UTC)
+    items = []
+    for i in range(3):
+        item = _make_learned_item(
+            db,
+            session_id=source.id,
+            topic_id=topic.id,
+            question=f"Question {i}",
+            created_at=datetime(2026, 5, 1, tzinfo=UTC) + timedelta(minutes=i),
+        )
+        item.last_reviewed_at = old_time
+        items.append(item)
+    db.commit()
+
+    retest, _ = start_retest(
+        db=db, source_session_id=source.id, transport_kind=TransportKind.DEEPSEEK
+    )
+
+    now = datetime(2026, 5, 20, tzinfo=UTC)
+    mark_source_items_reviewed(db, retest, now)
+    db.commit()
+
+    for item in items:
+        db.refresh(item)
+        # SQLite drops tz info on read: the stored tz-aware
+        # value comes back naive. Compare against the naive form.
+        assert item.last_reviewed_at == now.replace(tzinfo=None)
