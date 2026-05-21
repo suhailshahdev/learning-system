@@ -307,19 +307,13 @@ def _assert_parent_items_bumped(
     if not source_items:
         raise RuntimeError(f"Source session {source_session_id} has no items to check.")
 
-    # SQLite drops tz info on DateTime(timezone=True), so on
-    # read-back last_reviewed_at is offset-naive even though approve
-    # wrote offset-aware UTC. Normalize the threshold to naive UTC for
-    # comparison rather than reaching into the ORM.
-    threshold_naive = before_bump_threshold.replace(tzinfo=None)
-
     # LearnedItem.last_reviewed_at is nullable on the model. Items
     # missing the bump (still None) and items whose bump didn't
     # advance past the threshold both count as stale here.
     stale = [
         item
         for item in source_items
-        if item.last_reviewed_at is None or item.last_reviewed_at <= threshold_naive
+        if item.last_reviewed_at is None or item.last_reviewed_at <= before_bump_threshold
     ]
     if stale:
         ids = [item.id for item in stale]
