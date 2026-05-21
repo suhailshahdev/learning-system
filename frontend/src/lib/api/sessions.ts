@@ -265,6 +265,46 @@ export function useAbandonSession(): UseMutationResult<
     });
 }
 
+// Start retest hook for POST /sessions/{source_session_id}/retest.
+//
+// Reuses StartSessionResponseSchema since the backend's
+// StartRetestResponse has the same {session, first_turn} shape:
+// the retest's first question is reconstructed from the source's
+// first LearnedItem and surfaces as a synthetic ParsedTurn.
+// The frontend treats the returned session like any session that
+// started with a teaching turn already in place. Session.tsx
+// handles the retest cycle without branching on parent_session_id
+// because send/continue route through the same endpoints and the
+// backend dispatches via parent_session_id internally.
+
+export type StartRetestVariables = {
+    source_session_id: string;
+    transport_kind: TransportKind;
+};
+
+export const StartRetestResponseSchema = StartSessionResponseSchema;
+export type StartRetestResponse = StartSessionResponse;
+
+async function startRetest(
+    variables: StartRetestVariables,
+): Promise<StartRetestResponse> {
+    return apiFetch(`/sessions/${variables.source_session_id}/retest`, {
+        method: "POST",
+        body: { transport_kind: variables.transport_kind },
+        schema: StartRetestResponseSchema,
+    });
+}
+
+export function useStartRetest(): UseMutationResult<
+    StartRetestResponse,
+    Error,
+    StartRetestVariables
+> {
+    return useMutation({
+        mutationFn: startRetest,
+    });
+}
+
 // Resume (cold-load) hook for GET /sessions/{id}.
 //
 // Returns the session row plus the latest parsed response so

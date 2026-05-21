@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { ApiStatus } from "@/components/api-status";
 import { ModeToggle } from "@/components/mode-toggle";
+import { RetestDialog } from "@/components/retest/retest-dialog";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog } from "@/components/ui/dialog";
 import {
     useBrowse,
     type BrowseSessionRow,
@@ -190,6 +194,13 @@ function SessionRow({ row }: SessionRowProps): React.JSX.Element {
     const stateLabel = STATE_LABELS[row.state];
     const stateClass = STATE_STYLES[row.state];
 
+    // Retest eligibility: COMPLETED with at least one learned item.
+    // The button only renders when both hold, so the backend's 409
+    // (empty_source or not_eligible) shouldn't fire unless state
+    // shifted between render and click.
+    const isRetestEligible =
+        row.state === "completed" && row.learned_item_count >= 1;
+
     const content = (
         <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-1">
@@ -208,9 +219,16 @@ function SessionRow({ row }: SessionRowProps): React.JSX.Element {
     );
 
     // Row routing mirrors RecentSessions:
-    // - in_progress → live session page
-    // - completed / abandoned → transcript
+    // - in_progress → live session page (no retest)
+    // - completed → transcript link, retest button for eligible
+    // - abandoned → transcript link (no retest)
     // - archived → inert (no surface yet)
+    //
+    // When the retest button is present, it lives outside the
+    // transcript Link so the button click doesn't navigate. The
+    // button uses stopPropagation defensively in case nested-link
+    // semantics ever surprise us. Current shadcn Button is a real
+    // <button> so this is belt-and-braces.
     if (row.state === "in_progress") {
         return (
             <Link
@@ -223,13 +241,62 @@ function SessionRow({ row }: SessionRowProps): React.JSX.Element {
     }
     if (row.state === "completed" || row.state === "abandoned") {
         return (
-            <Link
-                to={`/session/${row.id}/transcript`}
-                className="block rounded-md border border-border p-3 transition-colors hover:bg-accent"
-            >
-                {content}
-            </Link>
+            <div className="rounded-md border border-border">
+                <Link
+                    to={`/session/${row.id}/transcript`}
+                    className="block p-3 transition-colors hover:bg-accent"
+                >
+                    {content}
+                </Link>
+                {isRetestEligible ? (
+                    <div className="border-t border-border p-2">
+                        <RetestButton
+                            sourceSessionId={row.id}
+                            topicLabel={topicLabel}
+                        />
+                    </div>
+                ) : null}
+            </div>
         );
     }
     return <div className="rounded-md border border-border p-3">{content}</div>;
+}
+
+type RetestButtonProps = {
+    sourceSessionId: string;
+    topicLabel: string;
+};
+
+function RetestButton({
+    sourceSessionId,
+    topicLabel,
+}: RetestButtonProps): React.JSX.Element {
+    // Local open state per row. Multiple rows could each have a
+    // dialog in principle, but the Dialog primitive only allows
+    // one visible at a time (Radix focuses the latest opened).
+    // Per-row state is the simplest correct mental model.
+    const [open, setOpen] = useState(false);
+
+    return (
+        <Dialog open={open} onOpenChange={setOpen}>
+            <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-xs text-muted-foreground hover:text-foreground"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    setOpen(true);
+                }}
+            >
+                Retest this session
+            </Button>
+            {open ? (
+                <RetestDialog
+                    sourceSessionId={sourceSessionId}
+                    topicLabel={topicLabel}
+                    onClose={() => { setOpen(false); }}
+                />
+            ) : null}
+        </Dialog>
+    );
 }
