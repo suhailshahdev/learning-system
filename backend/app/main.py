@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import diagnose, health, home, sessions, topics
 from app.core.config import Settings, get_settings
+from app.services.embedding_service import OpenRouterEmbedder
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
 
@@ -43,8 +44,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 default_model=settings.deepseek_model,
             )
         )
+        embedder = await stack.enter_async_context(
+            OpenRouterEmbedder(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                model=settings.openrouter_embedding_model,
+            )
+        )
+
         app.state.playwright_transport = playwright_transport
         app.state.deepseek_transport = deepseek_transport
+        app.state.embedder = embedder
         yield
 
 

@@ -25,13 +25,16 @@ from typing import TYPE_CHECKING, Protocol, Self
 
 import httpx
 
-from app.models import Embedding, EmbeddingSourceType
+from app.models import Embedding, EmbeddingSourceType, ErrorLog
 from app.models.embedding import EMBEDDING_DIM
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from types import TracebackType
 
     from sqlalchemy.orm import Session as DbSession
+
+    from app.models import LearnedItem
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -239,3 +242,47 @@ async def embed_records(
         db.add(row)
     db.flush()
     return rows
+
+
+def records_from_learned_items(items: Sequence[LearnedItem]) -> list[EmbeddingRecord]:
+    """Build embedding records from learned items.
+
+    Embeds question and answer together: the question alone serves
+    dedup ("have I asked this"), but concatenating the answer makes
+    retrieval hit on items whose answer discusses a topic the
+    question did not name. Shared by the approve path and the
+    backfill script so both embed the same text shape.
+    """
+    return [
+        EmbeddingRecord(
+            source_type=EmbeddingSourceType.LEARNED_ITEM,
+            source_id=item.id,
+            content=f"{item.question}\n{item.answer}",
+        )
+        for item in items
+    ]
+
+
+def log_embedding_failure(db: DbSession, session_id: str | None, exc: EmbeddingError) -> None:
+    """Write an error_log row for a failed embedding and commit it.
+
+    Embedding is best-effort: a failure leaves a backfillable gap,
+    it does not fail the operation that triggered it. Callers catch
+    EmbeddingError and call this instead of propagating. Mirrors the
+    session service's error-log helper but lives here so the
+    embedding concern owns its own failure recording.
+
+    Errors inside this helper are swallowed so they cannot mask the
+    original flow.
+    """
+    try:
+        row = ErrorLog(
+            session_id=session_id,
+            kind="embedding.failed",
+            message=exc.message,
+            context={"cause": type(exc.cause).__name__ if exc.cause else None},
+        )
+        db.add(row)
+        db.commit()
+    except Exception:
+        db.rollback()

@@ -13,6 +13,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.services.embedding_service import OpenRouterEmbedder
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
 
@@ -30,8 +31,16 @@ def get_deepseek_transport(request: Request) -> DeepseekTransport:
     return request.app.state.deepseek_transport  # type: ignore[no-any-return]
 
 
+def get_embedder(request: Request) -> OpenRouterEmbedder:
+    """Return the app-scoped embedder from app.state."""
+    return request.app.state.embedder  # type: ignore[no-any-return]
+
+
 PlaywrightTransportDep = Annotated[PlaywrightClaudeTransport, Depends(get_playwright_transport)]
 """The app-scoped Playwright + claude.ai transport."""
 
 DeepseekTransportDep = Annotated[DeepseekTransport, Depends(get_deepseek_transport)]
 """The app-scoped DeepSeek chat completions transport."""
+
+EmbedderDep = Annotated[OpenRouterEmbedder, Depends(get_embedder)]
+"""The app-scoped OpenRouter embedder."""

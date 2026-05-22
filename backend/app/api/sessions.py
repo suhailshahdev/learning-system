@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.deps import (  # noqa: TC001
     DbSession,
     DeepseekTransportDep,
+    EmbedderDep,
     PlaywrightTransportDep,
 )
 from app.models import Session, TransportKind
@@ -38,6 +39,12 @@ from app.schemas.session_api import (
 )
 from app.schemas.transcript_api import TranscriptResponse
 from app.services.browse_service import list_sessions
+from app.services.embedding_service import (
+    EmbeddingError,
+    embed_records,
+    log_embedding_failure,
+    records_from_learned_items,
+)
 from app.services.parser import ParseError
 from app.services.retest_service import (
     RetestServiceError,
@@ -221,12 +228,30 @@ async def continue_session(
 async def approve(
     session_id: str,
     db: DbSession,
+    embedder: EmbedderDep,
 ) -> SessionResponse:
-    """Approve a completed session, mint learned items."""
+    """Approve a completed session, mint learned items, embed them.
+
+    Embedding runs after approval commits and is best-effort: a
+    failure is logged and swallowed, never failing the approve. The
+    minted items are already persisted. A missing embedding is a
+    backfillable gap, not lost data.
+    """
     try:
         completed = await approve_session(db=db, session_id=session_id)
     except SessionServiceError as exc:
         raise _map_service_error(exc) from exc
+
+    # Embed the minted items post-commit. Isolated from the approve
+    # transaction: approve_session has already committed and the
+    # items exist regardless of what happens here.
+    records = records_from_learned_items(completed.learned_items)
+    if records:
+        try:
+            await embed_records(db=db, embedder=embedder, records=records)
+            db.commit()
+        except EmbeddingError as exc:
+            log_embedding_failure(db, completed.id, exc)
 
     return SessionResponse.model_validate(completed)
 
