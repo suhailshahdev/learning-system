@@ -74,6 +74,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    openrouter_api_key: SecretStr = Field(
+        description=(
+            "API key for OpenRouter, used by the embedding service for "
+            "semantic retrieval. OpenRouter is an OpenAI-compatible "
+            "gateway. SecretStr keeps it out of logs and reprs."
+        ),
+    )
+    openrouter_embedding_model: str = Field(
+        default="openai/text-embedding-3-small",
+        description=(
+            "Embedding model routed through OpenRouter. Default is "
+            "OpenAI's small tier: 1536 dimensions, cheap. The embedding "
+            "column width is fixed at this model's dimension, so changing "
+            "to a different-dimension model is a migration, not a flip."
+        ),
+    )
+
     @property
     def is_local(self) -> bool:
         """True when running in a local development context."""

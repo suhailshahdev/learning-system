@@ -11,9 +11,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.models.embedding import EMBEDDING_DIM
+from app.services.embedding_service import EmbeddingError
 from app.transport.base import ToolResult, TransportError, TransportResponse
 
 if TYPE_CHECKING:
+    from app.services.embedding_service import Embedder
     from app.transport.base import ChatResumeMetadata, LLMTransport
 
 
@@ -149,3 +152,35 @@ class FakeTransport:
 
 
 _: type[LLMTransport[FakeChatHandle]] = FakeTransport
+
+
+class FakeEmbedder:
+    """Deterministic Embedder for tests. No network.
+
+    Produces a fixed-dimension vector per text derived from its hash,
+    so the same text always embeds identically and different texts
+    differ. model_version is fixed. raise_on_embed forces failure for
+    testing the error-isolation path.
+    """
+
+    def __init__(self, *, raise_on_embed: bool = False) -> None:
+        self._raise = raise_on_embed
+
+    @property
+    def model_version(self) -> str:
+        return "fake-embedder-v1"
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if self._raise:
+            raise EmbeddingError("FakeEmbedder forced failure.")
+        return [self._vector_for(text) for text in texts]
+
+    def _vector_for(self, text: str) -> list[float]:
+        # Deterministic pseudo-vector seeded off the text hash. Not
+        # meaningful for similarity, just stable and correctly shaped
+        # for storage tests.
+        seed = hash(text)
+        return [((seed >> (i % 32)) & 0xFF) / 255.0 for i in range(EMBEDDING_DIM)]
+
+
+_embedder: Embedder = FakeEmbedder()
