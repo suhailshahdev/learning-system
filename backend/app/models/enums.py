@@ -145,3 +145,18 @@ class TransportKind(StrEnum):
 
     CLAUDE_PLAYWRIGHT = "claude_playwright"
     DEEPSEEK = "deepseek"
+
+
+class EmbeddingSourceType(StrEnum):
+    """What an embedding row was derived from. Used by `embedding.source_type`.
+
+    Two sources at present. LEARNED_ITEM embeddings come from an
+    approved question/answer pair, source_id is a learned_item.id.
+    DOCUMENT_CHUNK embeddings come from a slice of an ingested text
+    document, source_id is a document.id. source_id is a polymorphic
+    reference resolved by source_type, not a foreign key, since it
+    points at different tables per kind.
+    """
+
+    LEARNED_ITEM = "learned_item"
+    DOCUMENT_CHUNK = "document_chunk"

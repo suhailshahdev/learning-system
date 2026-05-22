@@ -5,11 +5,14 @@ and `Timestamps` unless there is a specific reason not to.
 """
 
 from app.models.base import Base, Timestamps, UUIDPrimaryKey
+from app.models.document import Document
 from app.models.domain import Domain
+from app.models.embedding import Embedding
 from app.models.enums import (
     AssertionSource,
     Difficulty,
     DomainKind,
+    EmbeddingSourceType,
     GradingVerdict,
     LearnedItemStatus,
     LearningMode,
@@ -32,8 +35,11 @@ __all__ = [
     "AssertionSource",
     "Base",
     "Difficulty",
+    "Document",
     "Domain",
     "DomainKind",
+    "Embedding",
+    "EmbeddingSourceType",
     "ErrorLog",
     "GradingVerdict",
     "LearnedItem",
