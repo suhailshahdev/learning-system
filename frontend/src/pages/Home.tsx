@@ -26,6 +26,9 @@ export function Home(): React.JSX.Element {
                     <Link to="/sessions" className="underline underline-offset-4">
                         Sessions
                     </Link>
+                    <Link to="/search" className="underline underline-offset-4">
+                        Search
+                    </Link>
                 </nav>
                 <div className="flex items-center gap-4">
                     <DiagnoseButton />

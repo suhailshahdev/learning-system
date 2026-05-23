@@ -75,6 +75,9 @@ export function Browse(): React.JSX.Element {
                     <Link to="/topics" className="underline underline-offset-4">
                         Topics
                     </Link>
+                    <Link to="/search" className="underline underline-offset-4">
+                        Search
+                    </Link>
                 </nav>
                 <div className="flex items-center gap-4">
                     <ApiStatus />
