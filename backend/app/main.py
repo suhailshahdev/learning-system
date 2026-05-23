@@ -13,7 +13,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import diagnose, health, home, sessions, topics
+from app.api import diagnose, health, home, search, sessions, topics
 from app.core.config import Settings, get_settings
 from app.services.embedding_service import OpenRouterEmbedder
 from app.transport.deepseek_impl import DeepseekTransport
@@ -82,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(diagnose.router, prefix="/api")
     app.include_router(health.router, prefix="/api")
     app.include_router(home.router, prefix="/api")
+    app.include_router(search.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
     app.include_router(topics.router, prefix="/api")
     return app
