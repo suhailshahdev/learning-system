@@ -6,11 +6,16 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useSearch, type SearchHit } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { useIngestDocument, useSearch, type SearchHit } from "@/lib/api";
 
 export function Search(): React.JSX.Element {
     const [query, setQuery] = useState("");
     const search = useSearch();
+
+    const [docTitle, setDocTitle] = useState("");
+    const [docContent, setDocContent] = useState("");
+    const ingest = useIngestDocument();
 
     const onSubmit = (): void => {
         const trimmed = query.trim();
@@ -18,6 +23,25 @@ export function Search(): React.JSX.Element {
             return;
         }
         search.mutate({ query: trimmed, limit: 10 });
+    };
+
+    const onIngest = (): void => {
+        const title = docTitle.trim();
+        const content = docContent.trim();
+        if (title.length === 0 || content.length === 0) {
+            return;
+        }
+        ingest.mutate(
+            { title, content },
+            {
+                onSuccess: () => {
+                    // Clear the form, ready for the next paste. The
+                    // success message below reports what was ingested.
+                    setDocTitle("");
+                    setDocContent("");
+                },
+            },
+        );
     };
 
     return (
@@ -42,6 +66,55 @@ export function Search(): React.JSX.Element {
             <main className="p-8">
                 <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
                     <h1 className="text-3xl font-bold">Search</h1>
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Add a document</CardTitle>
+                            <CardDescription>
+                                Paste notes or an article to add it to the searchable corpus.
+                                It is split into chunks and embedded.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="flex flex-col gap-2">
+                                <Input
+                                    value={docTitle}
+                                    onChange={(e) => { setDocTitle(e.target.value); }}
+                                    placeholder="Title"
+                                    aria-label="Document title"
+                                />
+                                <Textarea
+                                    value={docContent}
+                                    onChange={(e) => { setDocContent(e.target.value); }}
+                                    placeholder="Paste the document text here..."
+                                    aria-label="Document content"
+                                    rows={6}
+                                />
+                                <div className="flex items-center gap-3">
+                                    <Button
+                                        onClick={onIngest}
+                                        disabled={
+                                            ingest.isPending
+                                            || docTitle.trim().length === 0
+                                            || docContent.trim().length === 0
+                                        }
+                                    >
+                                        {ingest.isPending ? "Adding..." : "Add document"}
+                                    </Button>
+                                    {ingest.isSuccess ? (
+                                        <p className="text-xs text-success">
+                                            Added “{ingest.data.title}” — {ingest.data.chunk_count}{" "}
+                                            {ingest.data.chunk_count === 1 ? "chunk" : "chunks"}.
+                                        </p>
+                                    ) : null}
+                                    {ingest.isError ? (
+                                        <p className="text-xs text-destructive">
+                                            {ingest.error.message}
+                                        </p>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
                     <Card>
                         <CardHeader>
                             <CardTitle>Semantic search</CardTitle>
