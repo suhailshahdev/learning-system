@@ -25,7 +25,7 @@ from app.services.diagnostic_service import (
 )
 from app.transport.base import TransportError, TransportResponse
 
-from tests.services.fakes import FakeTransport
+from tests.services.fakes import FakeEmbedder, FakeTransport
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -110,7 +110,10 @@ async def test_happy_path_returns_proposal(diagnosable_db: DbSession) -> None:
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     result = await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(result, ParsedProposal)
@@ -123,7 +126,10 @@ async def test_one_tool_call_then_proposal(diagnosable_db: DbSession) -> None:
     transport = FakeTransport([TOOL_CALL_GET_WEAK, PROPOSAL_RESPONSE])
 
     result = await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(result, ParsedProposal)
@@ -137,7 +143,10 @@ async def test_multiple_tool_calls_then_proposal(diagnosable_db: DbSession) -> N
     transport = FakeTransport([TOOL_CALL_GET_WEAK, TOOL_CALL_GET_WEAK, PROPOSAL_RESPONSE])
 
     result = await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(result, ParsedProposal)
@@ -150,7 +159,10 @@ async def test_wrong_response_kind_raises(diagnosable_db: DbSession) -> None:
 
     with pytest.raises(DiagnosticServiceError, match="Expected a PROPOSAL"):
         await propose_topic(
-            db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+            db=diagnosable_db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -160,7 +172,10 @@ async def test_transport_failure_on_start_raises(diagnosable_db: DbSession) -> N
 
     with pytest.raises(DiagnosticServiceError, match="opening diagnostic chat"):
         await propose_topic(
-            db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+            db=diagnosable_db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -179,7 +194,10 @@ async def test_transport_failure_after_tool_call_raises(diagnosable_db: DbSessio
 
     with pytest.raises(DiagnosticServiceError):
         await propose_topic(
-            db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+            db=diagnosable_db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -193,7 +211,10 @@ async def test_chat_closed_after_success(diagnosable_db: DbSession) -> None:
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     # Exactly one chat opened, none leaked beyond the function's scope.
@@ -206,7 +227,10 @@ async def test_unparseable_response_raises(diagnosable_db: DbSession) -> None:
 
     with pytest.raises(DiagnosticServiceError):
         await propose_topic(
-            db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+            db=diagnosable_db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -216,7 +240,10 @@ async def test_error_carries_kind_discriminator(diagnosable_db: DbSession) -> No
 
     with pytest.raises(DiagnosticServiceError) as exc_info:
         await propose_topic(
-            db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+            db=diagnosable_db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
         )
 
     assert exc_info.value.kind == "wrong_response_kind"
@@ -233,7 +260,10 @@ async def test_transport_response_with_native_tool_calls_handled(diagnosable_db:
     )
 
     result = await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(result, ParsedProposal)
@@ -260,7 +290,10 @@ async def test_multiple_native_tool_calls_in_one_response_all_executed(
     )
 
     result = await propose_topic(
-        db=diagnosable_db, transport=transport, transport_kind=TransportKind.DEEPSEEK
+        db=diagnosable_db,
+        transport=transport,
+        transport_kind=TransportKind.DEEPSEEK,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(result, ParsedProposal)
@@ -288,7 +321,12 @@ async def test_empty_db_raises_no_data_without_transport_call(db: DbSession) -> 
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     with pytest.raises(DiagnosticServiceError) as exc_info:
-        await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+        await propose_topic(
+            db=db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
+        )
 
     assert exc_info.value.kind == "no_data"
     # Critical: transport was never opened. If chats is non-empty,
@@ -303,7 +341,12 @@ async def test_domain_only_no_topics_raises_no_data(db: DbSession) -> None:
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     with pytest.raises(DiagnosticServiceError) as exc_info:
-        await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+        await propose_topic(
+            db=db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
+        )
 
     assert exc_info.value.kind == "no_data"
     assert "topics" in exc_info.value.message.lower()
@@ -325,7 +368,12 @@ async def test_topic_without_domain_row_raises_no_data(db: DbSession) -> None:
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     with pytest.raises(DiagnosticServiceError) as exc_info:
-        await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+        await propose_topic(
+            db=db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
+        )
 
     assert exc_info.value.kind == "no_data"
     assert "domains" in exc_info.value.message.lower()
@@ -340,7 +388,9 @@ async def test_topic_and_domain_present_proceeds_normally(db: DbSession) -> None
 
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
-    result = await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+    result = await propose_topic(
+        db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK, embedder=FakeEmbedder()
+    )
 
     assert isinstance(result, ParsedProposal)
     assert len(transport.chats) == 1
@@ -351,7 +401,12 @@ async def test_no_data_error_carries_kind_discriminator(db: DbSession) -> None:
     transport = FakeTransport([PROPOSAL_RESPONSE])
 
     with pytest.raises(DiagnosticServiceError) as exc_info:
-        await propose_topic(db=db, transport=transport, transport_kind=TransportKind.DEEPSEEK)
+        await propose_topic(
+            db=db,
+            transport=transport,
+            transport_kind=TransportKind.DEEPSEEK,
+            embedder=FakeEmbedder(),
+        )
 
     assert exc_info.value.kind == "no_data"
     assert isinstance(exc_info.value.message, str)

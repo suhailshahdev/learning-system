@@ -24,6 +24,7 @@ from app.schemas.tools import (
     GetUserKnowledgeSummaryCall,
     GetWeakTopicsCall,
     ListDomainsCall,
+    SearchCorpusCall,
     ToolCall,
 )
 from app.services.tools.handlers import (
@@ -35,17 +36,25 @@ from app.services.tools.handlers import (
     get_user_knowledge_summary,
     get_weak_topics,
     list_domains,
+    search_corpus_tool,
 )
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
     from sqlalchemy.orm import Session as DbSession
 
+    from app.services.embedding_service import Embedder
+
 
 # Map from tool name (the discriminator) to the handler function.
 # Static dict because the surface is fixed. If tools become
 # pluggable in the future, this becomes a registry class with
 # register/unregister methods.
+# Name -> handler for the (db, args) handlers. search_corpus is not
+# here: it needs an embedder, so it has a different call shape and is
+# dispatched directly in execute_tool_call's match block. If a third
+# dependency-carrying handler appears, this split should become a
+# ToolContext passed to every handler.
 HANDLERS = {
     "list_domains": list_domains,
     "create_domain": create_domain,
@@ -58,7 +67,7 @@ HANDLERS = {
 }
 
 
-async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:  # noqa: PLR0911
+async def execute_tool_call(db: DbSession, call: ToolCall, embedder: Embedder) -> BaseModel:  # noqa: PLR0911
     """Dispatch a ToolCall to the matching handler.
 
     Pydantic narrows `call` based on its discriminator. The match
@@ -66,6 +75,9 @@ async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:  # noqa
     its handler. Returns the handler's output as a Pydantic model,
     the caller serializes it to whatever wire format the transport
     needs.
+
+    embedder is needed only by search_corpus, the one handler that
+    embeds its query. The other handlers ignore it.
     """
     match call:
         case ListDomainsCall():
@@ -84,3 +96,5 @@ async def execute_tool_call(db: DbSession, call: ToolCall) -> BaseModel:  # noqa
             return await get_weak_topics(db, call.args)
         case GetStaleTopicsCall():
             return await get_stale_topics(db, call.args)
+        case SearchCorpusCall():
+            return await search_corpus_tool(db, call.args, embedder)

@@ -60,6 +60,7 @@ from app.services.diagnostic_service import (
     DiagnosticServiceError,
     propose_topic,
 )
+from app.services.embedding_service import OpenRouterEmbedder
 from app.transport import TransportError
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
@@ -223,6 +224,7 @@ async def smoke_one(
     name: str,
     transport: LLMTransport[Any],
     transport_kind: TransportKind,
+    embedder: OpenRouterEmbedder,
 ) -> None:
     """Run propose_topic against the given transport and print results."""
     print(f"=== {name} ===")
@@ -234,6 +236,7 @@ async def smoke_one(
             db=db,
             transport=transport,
             transport_kind=transport_kind,
+            embedder=embedder,
         )
 
         print(f"  [proposal] topic_path: {proposal.topic_path}")
@@ -262,26 +265,32 @@ async def run(choice: TransportChoice) -> None:
 
     _print_seeded_summary()
 
-    if choice in {"deepseek", "all"}:
-        print("Starting DeepSeek transport...\n")
-        async with DeepseekTransport(
-            api_key=settings.deepseek_api_key.get_secret_value(),
-            default_model=settings.deepseek_model,
-        ) as ds:
-            await smoke_one(
-                f"DeepSeek/{settings.deepseek_model}",
-                ds,
-                TransportKind.DEEPSEEK,
-            )
+    async with OpenRouterEmbedder(
+        api_key=settings.openrouter_api_key.get_secret_value(),
+        model=settings.openrouter_embedding_model,
+    ) as embedder:
+        if choice in {"deepseek", "all"}:
+            print("Starting DeepSeek transport...\n")
+            async with DeepseekTransport(
+                api_key=settings.deepseek_api_key.get_secret_value(),
+                default_model=settings.deepseek_model,
+            ) as ds:
+                await smoke_one(
+                    f"DeepSeek/{settings.deepseek_model}",
+                    ds,
+                    TransportKind.DEEPSEEK,
+                    embedder,
+                )
 
-    if choice in {"playwright", "all"}:
-        print("Starting Playwright transport...\n")
-        async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
-            await smoke_one(
-                "Playwright/claude.ai",
-                pw,
-                TransportKind.CLAUDE_PLAYWRIGHT,
-            )
+        if choice in {"playwright", "all"}:
+            print("Starting Playwright transport...\n")
+            async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
+                await smoke_one(
+                    "Playwright/claude.ai",
+                    pw,
+                    TransportKind.CLAUDE_PLAYWRIGHT,
+                    embedder,
+                )
 
     print("Smoke complete.")
 

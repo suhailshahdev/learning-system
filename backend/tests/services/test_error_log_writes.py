@@ -27,7 +27,7 @@ from app.services.session_service import (
 )
 from app.transport.base import TransportError
 
-from tests.services.fakes import FakeTransport
+from tests.services.fakes import FakeEmbedder, FakeTransport
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -103,6 +103,7 @@ async def test_start_session_transport_failure_writes_log(db: DbSession) -> None
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).all()
@@ -125,6 +126,7 @@ async def test_start_session_parse_failure_writes_log(db: DbSession) -> None:
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).all()
@@ -146,6 +148,7 @@ async def test_start_session_wrong_kind_writes_log(db: DbSession) -> None:
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).all()
@@ -174,6 +177,7 @@ async def test_send_user_answer_transport_failure_writes_log(db: DbSession) -> N
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     with pytest.raises(SessionServiceError):
@@ -182,6 +186,7 @@ async def test_send_user_answer_transport_failure_writes_log(db: DbSession) -> N
             transport=transport,
             session_id=session.id,
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.send.transport_failed").all()
@@ -199,6 +204,7 @@ async def test_send_user_answer_parse_failure_writes_log(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     with pytest.raises(SessionServiceError):
@@ -207,6 +213,7 @@ async def test_send_user_answer_parse_failure_writes_log(db: DbSession) -> None:
             transport=transport,
             session_id=session.id,
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.send.parse_failed").all()
@@ -238,12 +245,14 @@ async def test_handover_request_transport_failure_writes_log(db: DbSession) -> N
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -254,6 +263,7 @@ async def test_handover_request_transport_failure_writes_log(db: DbSession) -> N
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
     rows = (
@@ -278,12 +288,14 @@ async def test_handover_request_parse_failure_writes_log(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -294,6 +306,7 @@ async def test_handover_request_parse_failure_writes_log(db: DbSession) -> None:
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.request_parse_failed").all()
@@ -314,12 +327,14 @@ async def test_handover_request_wrong_kind_writes_log(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -330,6 +345,7 @@ async def test_handover_request_wrong_kind_writes_log(db: DbSession) -> None:
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
     rows = db.query(ErrorLog).filter(ErrorLog.kind == "session.handover.wrong_response_kind").all()
@@ -349,6 +365,7 @@ async def test_failed_start_does_not_write_session_or_turns(db: DbSession) -> No
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     # error_log row is committed.

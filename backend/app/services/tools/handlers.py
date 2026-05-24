@@ -49,15 +49,21 @@ from app.schemas.tools import (
     ListDomainsInput,
     ListDomainsOutput,
     RecentSessionInfo,
+    SearchCorpusInput,
+    SearchCorpusOutput,
+    SearchHitInfo,
     StaleTopicInfo,
     TopicInfo,
     WeakTopicInfo,
     WrongAnswerSample,
 )
+from app.services.search_service import search_corpus
 from app.services.topic_crud import get_or_create_topic_with_ancestors
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
+
+    from app.services.embedding_service import Embedder
 
 
 # Stable ordering for difficulty in the knowledge summary.
@@ -382,6 +388,33 @@ async def get_stale_topics(db: DbSession, args: GetStaleTopicsInput) -> GetStale
             )
         )
     return GetStaleTopicsOutput(topics=result)
+
+
+async def search_corpus_tool(
+    db: DbSession, args: SearchCorpusInput, embedder: Embedder
+) -> SearchCorpusOutput:
+    """Semantic search over the embedding corpus for the teaching LLM.
+
+    Wraps search_service.search_corpus, the same cosine query the
+    /api/search endpoint uses. Takes the embedder because the query
+    string must be embedded before the search. This is the one
+    handler whose signature carries a dependency beyond db and args.
+
+    Read-only, no commit needed.
+    """
+    hits = await search_corpus(
+        db,
+        embedder,
+        args.query,
+        limit=args.limit,
+        source_type=args.source_type,
+    )
+    return SearchCorpusOutput(
+        hits=[
+            SearchHitInfo(source_type=hit.source_type, content=hit.content, score=hit.score)
+            for hit in hits
+        ]
+    )
 
 
 def _truncate(text: str, max_chars: int) -> str:

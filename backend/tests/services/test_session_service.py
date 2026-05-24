@@ -47,7 +47,7 @@ from app.services.tools import registry as tool_registry
 from app.services.tools.handlers import ToolHandlerError
 from app.transport.base import TransportError, TransportResponse
 
-from tests.services.fakes import FakeTransport
+from tests.services.fakes import FakeEmbedder, FakeTransport
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -119,6 +119,7 @@ async def test_start_session_persists_session_and_turns(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     assert session.state == SessionState.IN_PROGRESS
@@ -153,6 +154,7 @@ async def test_start_session_persists_transport_kind(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.CLAUDE_PLAYWRIGHT,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     assert session.transport_kind == TransportKind.CLAUDE_PLAYWRIGHT
@@ -168,6 +170,7 @@ async def test_start_session_creates_topic_if_missing(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     topics = db.query(Topic).all()
@@ -195,6 +198,7 @@ async def test_start_session_reuses_existing_topic(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     assert db.query(Topic).count() == 1
@@ -211,6 +215,7 @@ async def test_start_session_raises_on_parse_failure(db: DbSession) -> None:
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     assert isinstance(exc.value.cause, ParseError)
@@ -231,6 +236,7 @@ async def test_start_session_raises_on_transport_error(db: DbSession) -> None:
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     assert isinstance(exc.value.cause, TransportError)
@@ -248,6 +254,7 @@ async def test_start_session_raises_on_wrong_response_kind(db: DbSession) -> Non
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="Python > Data Types > Integers",
+            embedder=FakeEmbedder(),
         )
 
     assert db.query(Session).count() == 0
@@ -263,6 +270,7 @@ async def test_start_session_persists_topic_prerequisites(db: DbSession) -> None
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="FastAPI > Routing > Path Parameters",
+        embedder=FakeEmbedder(),
     )
 
     topic = db.query(Topic).filter(Topic.path == "FastAPI > Routing > Path Parameters").one()
@@ -302,6 +310,7 @@ async def test_start_session_does_not_overwrite_existing_topic_prerequisites(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="FastAPI > Routing > Path Parameters",
+        embedder=FakeEmbedder(),
     )
 
     db.refresh(existing)
@@ -334,6 +343,7 @@ async def test_start_session_raises_on_unmet_prerequisite(db: DbSession) -> None
             transport=transport,
             transport_kind=TransportKind.DEEPSEEK,
             topic_path="FastAPI > Routing > Path Parameters",
+            embedder=FakeEmbedder(),
         )
 
     assert len(exc.value.unmet) == 1
@@ -373,6 +383,7 @@ async def test_start_session_proceeds_when_prerequisites_satisfied(db: DbSession
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="FastAPI > Routing > Path Parameters",
+        embedder=FakeEmbedder(),
     )
 
     assert session.state == SessionState.IN_PROGRESS
@@ -442,6 +453,7 @@ async def test_send_user_answer_persists_user_and_grading_turns(db: DbSession) -
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     parsed = await send_user_answer(
@@ -449,6 +461,7 @@ async def test_send_user_answer_persists_user_and_grading_turns(db: DbSession) -
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(parsed, ParsedGrading)
@@ -485,6 +498,7 @@ async def test_send_user_answer_rebuilds_chat_metadata(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     await send_user_answer(
@@ -492,6 +506,7 @@ async def test_send_user_answer_rebuilds_chat_metadata(db: DbSession) -> None:
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     # Two chats produced: one from start_new_chat, one from resume_chat.
@@ -514,6 +529,7 @@ async def test_send_user_answer_rejects_non_in_progress_session(db: DbSession) -
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     session.state = SessionState.COMPLETED
     db.commit()
@@ -524,6 +540,7 @@ async def test_send_user_answer_rejects_non_in_progress_session(db: DbSession) -
             transport=transport,
             session_id=session.id,
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
 
@@ -537,6 +554,7 @@ async def test_send_user_answer_rejects_unknown_session(db: DbSession) -> None:
             transport=transport,
             session_id="00000000-0000-0000-0000-000000000000",
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
 
@@ -548,6 +566,7 @@ async def test_send_user_answer_rolls_back_on_parse_failure(db: DbSession) -> No
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     turns_before = db.query(SessionTurn).count()
 
@@ -557,6 +576,7 @@ async def test_send_user_answer_rolls_back_on_parse_failure(db: DbSession) -> No
             transport=transport,
             session_id=session.id,
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
     # Neither user turn nor assistant turn was written.
@@ -597,12 +617,14 @@ async def test_approve_session_mints_learned_items_and_completes(db: DbSession) 
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     refreshed = await approve_session(db=db, session_id=session.id)
@@ -633,6 +655,7 @@ async def test_approve_session_skips_unanswered_teaching_turn(db: DbSession) -> 
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     # No send_user_answer call — the first teaching turn has no user answer.
@@ -650,12 +673,14 @@ async def test_approve_session_uses_placeholder_for_open_answer(db: DbSession) -
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="They grow as needed without overflow.",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -674,12 +699,14 @@ async def test_approve_session_skips_session_end_turn(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -698,12 +725,14 @@ async def test_approve_session_resolves_per_item_topic(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Overview",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -724,6 +753,7 @@ async def test_approve_session_rejects_non_in_progress_session(db: DbSession) ->
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     session.state = SessionState.COMPLETED
     db.commit()
@@ -760,24 +790,28 @@ async def test_approve_session_runs_derivation_within_transaction(db: DbSession)
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="1",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -804,12 +838,14 @@ async def test_approve_session_populates_grading_verdict_from_grading_turn(db: D
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -831,12 +867,14 @@ async def test_approve_session_populates_incorrect_verdict(db: DbSession) -> Non
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="2.5",
+        embedder=FakeEmbedder(),
     )
 
     await approve_session(db=db, session_id=session.id)
@@ -862,6 +900,7 @@ async def test_approve_session_leaves_verdict_none_when_no_grading_turn_follows(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     # Manually add a USER turn at index 2 without a following GRADING turn.
@@ -906,6 +945,7 @@ async def test_send_user_answer_below_threshold_uses_within_chat_path(db: DbSess
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     # Force the session well below the threshold.
@@ -917,6 +957,7 @@ async def test_send_user_answer_below_threshold_uses_within_chat_path(db: DbSess
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(parsed, ParsedTurn)
@@ -941,6 +982,7 @@ async def test_abandon_session_marks_state_and_persists(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     refreshed = await abandon_session(db=db, session_id=session.id)
@@ -957,12 +999,14 @@ async def test_abandon_session_preserves_partial_turns(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     turns_before = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
@@ -990,6 +1034,7 @@ async def test_abandon_session_rejects_completed_session(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     session.state = SessionState.COMPLETED
     db.commit()
@@ -1006,6 +1051,7 @@ async def test_abandon_session_rejects_already_abandoned(db: DbSession) -> None:
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     await abandon_session(db=db, session_id=session.id)
@@ -1078,6 +1124,7 @@ async def test_start_session_with_tool_call_executes_handler_and_proceeds(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     # Real handler effect: the GraphQL domain row exists in the DB.
@@ -1129,6 +1176,7 @@ async def test_send_user_answer_with_single_tool_call_persists_turn_pair(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     await send_user_answer(
@@ -1136,6 +1184,7 @@ async def test_send_user_answer_with_single_tool_call_persists_turn_pair(
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     turns = (
@@ -1192,6 +1241,7 @@ async def test_send_user_answer_with_chained_tool_calls_persists_all_pairs(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     await send_user_answer(
@@ -1199,6 +1249,7 @@ async def test_send_user_answer_with_chained_tool_calls_persists_all_pairs(
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     turns = (
@@ -1265,6 +1316,7 @@ async def test_send_user_answer_tool_handler_failure_rolls_back_and_logs(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     turns_before = db.query(SessionTurn).filter(SessionTurn.session_id == session.id).count()
 
@@ -1274,6 +1326,7 @@ async def test_send_user_answer_tool_handler_failure_rolls_back_and_logs(
             transport=transport,
             session_id=session.id,
             answer="3",
+            embedder=FakeEmbedder(),
         )
 
     # Rollback: no new turns persisted from the failed send.
@@ -1312,6 +1365,7 @@ async def test_send_user_answer_tool_calls_increment_message_count(
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
 
     # After start: message_count = 1 (the first message)
@@ -1322,6 +1376,7 @@ async def test_send_user_answer_tool_calls_increment_message_count(
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     db.refresh(session)
@@ -1355,18 +1410,21 @@ async def test_request_next_question_persists_continue_and_teaching_turns(db: Db
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     parsed = await request_next_question(
         db=db,
         transport=transport,
         session_id=session.id,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(parsed, ParsedTurn)
@@ -1397,6 +1455,7 @@ async def test_request_next_question_rejects_unknown_session(db: DbSession) -> N
             db=db,
             transport=transport,
             session_id="00000000-0000-0000-0000-000000000000",
+            embedder=FakeEmbedder(),
         )
 
 
@@ -1407,6 +1466,7 @@ async def test_request_next_question_rejects_non_in_progress_session(db: DbSessi
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     session.state = SessionState.COMPLETED
     db.commit()
@@ -1416,6 +1476,7 @@ async def test_request_next_question_rejects_non_in_progress_session(db: DbSessi
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -1432,6 +1493,7 @@ async def test_request_next_question_rejects_when_last_turn_is_not_grading(db: D
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     # Session right after start_session has SYSTEM(0) and ASSISTANT(1).
     # No user answer or grading yet. request_next_question should reject.
@@ -1441,6 +1503,7 @@ async def test_request_next_question_rejects_when_last_turn_is_not_grading(db: D
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
 
@@ -1459,12 +1522,14 @@ async def test_request_next_question_at_threshold_triggers_handover(db: DbSessio
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -1474,6 +1539,7 @@ async def test_request_next_question_at_threshold_triggers_handover(db: DbSessio
         db=db,
         transport=transport,
         session_id=session.id,
+        embedder=FakeEmbedder(),
     )
 
     assert isinstance(parsed, ParsedTurn)
@@ -1515,12 +1581,14 @@ async def test_request_next_question_at_threshold_rolls_back_on_handover_failure
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -1533,6 +1601,7 @@ async def test_request_next_question_at_threshold_rolls_back_on_handover_failure
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )
 
     turns_after = db.query(SessionTurn).count()
@@ -1553,12 +1622,14 @@ async def test_request_next_question_unexpected_tool_call_in_handover_path(db: D
         transport=transport,
         transport_kind=TransportKind.DEEPSEEK,
         topic_path="Python > Data Types > Integers",
+        embedder=FakeEmbedder(),
     )
     await send_user_answer(
         db=db,
         transport=transport,
         session_id=session.id,
         answer="3",
+        embedder=FakeEmbedder(),
     )
 
     session.claude_chat_message_count = HANDOVER_THRESHOLD
@@ -1569,4 +1640,5 @@ async def test_request_next_question_unexpected_tool_call_in_handover_path(db: D
             db=db,
             transport=transport,
             session_id=session.id,
+            embedder=FakeEmbedder(),
         )

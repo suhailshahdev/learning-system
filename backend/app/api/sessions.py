@@ -139,6 +139,7 @@ async def start(
     db: DbSession,
     playwright: PlaywrightTransportDep,
     deepseek: DeepseekTransportDep,
+    embedder: EmbedderDep,
 ) -> StartSessionResponse:
     """Open a new session against the chosen transport."""
     transport = _pick_transport(body.transport_kind, playwright, deepseek)
@@ -147,6 +148,7 @@ async def start(
         session, first_turn = await start_session(
             db=db,
             transport=transport,
+            embedder=embedder,
             transport_kind=body.transport_kind,
             topic_path=body.topic_path,
         )
@@ -166,6 +168,7 @@ async def send_turn(
     db: DbSession,
     playwright: PlaywrightTransportDep,
     deepseek: DeepseekTransportDep,
+    embedder: EmbedderDep,
 ) -> SendTurnResponse:
     """Send a user answer, return the grading response.
 
@@ -183,6 +186,7 @@ async def send_turn(
         parsed = await send_user_answer(
             db=db,
             transport=transport,
+            embedder=embedder,
             session_id=session_id,
             answer=body.answer,
         )
@@ -198,6 +202,7 @@ async def continue_session(
     db: DbSession,
     playwright: PlaywrightTransportDep,
     deepseek: DeepseekTransportDep,
+    embedder: EmbedderDep,
 ) -> ContinueSessionResponse:
     """Request the next teaching turn after grading.
 
@@ -216,6 +221,7 @@ async def continue_session(
         parsed = await request_next_question(
             db=db,
             transport=transport,
+            embedder=embedder,
             session_id=session_id,
         )
     except SessionServiceError as exc:

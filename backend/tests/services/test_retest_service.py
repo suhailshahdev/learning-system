@@ -49,7 +49,7 @@ from app.services.session_service import (
 )
 from app.transport.base import TransportError, TransportResponse
 
-from tests.services.fakes import FakeTransport
+from tests.services.fakes import FakeEmbedder, FakeTransport
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
@@ -964,7 +964,9 @@ async def test_send_user_answer_dispatches_retest_path(db: DbSession) -> None:
     )
 
     transport = FakeTransport([GRADING_RESPONSE_CORRECT])
-    result = await send_user_answer(db=db, transport=transport, session_id=retest.id, answer="3")
+    result = await send_user_answer(
+        db=db, transport=transport, session_id=retest.id, answer="3", embedder=FakeEmbedder()
+    )
 
     assert isinstance(result, ParsedGrading)
     # Retest path opened exactly one fresh chat via start_new_chat.
@@ -1019,7 +1021,9 @@ async def test_request_next_question_dispatches_retest_path(db: DbSession) -> No
     db.commit()
 
     transport = FakeTransport([])
-    result = await request_next_question(db=db, transport=transport, session_id=retest.id)
+    result = await request_next_question(
+        db=db, transport=transport, session_id=retest.id, embedder=FakeEmbedder()
+    )
 
     assert isinstance(result, ParsedTurn)
     assert result.question == "Second"

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from app.models import TransportKind
     from app.schemas.parsed_response import ParsedResponse
+    from app.services.embedding_service import Embedder
     from app.transport.base import LLMTransport
 
 
@@ -90,6 +91,7 @@ async def propose_topic(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     transport_kind: TransportKind,
 ) -> ParsedProposal:
     """Open a diagnostic chat, drive tool calls to completion, return the proposal.
@@ -131,6 +133,7 @@ async def propose_topic(
         parsed = _response_to_parsed(response)
         response, parsed = await _execute_until_proposal(
             transport=transport,
+            embedder=embedder,
             chat=chat,
             response=response,
             parsed=parsed,
@@ -162,6 +165,7 @@ async def propose_topic(
 async def _execute_until_proposal(
     *,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     chat: Any,
     response: TransportResponse,
     parsed: ParsedResponse,
@@ -190,7 +194,7 @@ async def _execute_until_proposal(
         results: list[ToolResult] = []
         for call in parsed.calls:
             try:
-                output = await execute_tool_call(db, call)
+                output = await execute_tool_call(db, call, embedder)
             except ToolHandlerError as e:
                 raise DiagnosticServiceError(
                     f"Tool handler {call.name!r} failed: {e.message}",

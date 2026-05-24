@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.deps import (  # noqa: TC001
     DbSession,
     DeepseekTransportDep,
+    EmbedderDep,
     PlaywrightTransportDep,
 )
 from app.models import TransportKind
@@ -84,6 +85,7 @@ async def diagnose(
     db: DbSession,
     playwright: PlaywrightTransportDep,
     deepseek: DeepseekTransportDep,
+    embedder: EmbedderDep,
 ) -> DiagnoseResponse:
     """Run the diagnostic flow and return a topic proposal.
 
@@ -91,14 +93,20 @@ async def diagnose(
     get_stale_topics, get_topics_by_domain, get_recent_sessions)
     and produces a PROPOSAL block. The chat is closed before this
     handler returns.
+
+    Embedder is threaded through even though the four diagnostic
+    tools do not use it. Symmetry with the session loop keeps
+    propose_topic's signature uniform with start_session and
+    send_user_answer, which the analytical tools were modeled
+    after.
     """
     transport = _pick_transport(body.transport_kind, playwright, deepseek)
-
     try:
         proposal = await propose_topic(
             db=db,
             transport=transport,
             transport_kind=body.transport_kind,
+            embedder=embedder,
         )
     except DiagnosticServiceError as exc:
         raise _map_diagnostic_error(exc) from exc

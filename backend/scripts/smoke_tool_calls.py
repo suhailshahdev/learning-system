@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.models import Domain, SessionTurn, TransportKind, TurnRole
+from app.services.embedding_service import OpenRouterEmbedder
 from app.services.session_service import (
     SessionServiceError,
     send_user_answer,
@@ -69,6 +70,7 @@ async def smoke_one(
     name: str,
     transport: LLMTransport[Any],
     transport_kind: TransportKind,
+    embedder: OpenRouterEmbedder,
 ) -> None:
     """Run start + follow-up against the given transport.
 
@@ -100,6 +102,7 @@ async def smoke_one(
             transport=transport,
             transport_kind=transport_kind,
             topic_path=SMOKE_TOPIC_PATH,
+            embedder=embedder,
         )
         print(f"  [start] session.id={session.id}")
         print(f"  [start] session.state={session.state.value}")
@@ -126,6 +129,7 @@ async def smoke_one(
             transport=transport,
             session_id=session.id,
             answer=FOLLOWUP_ANSWER,
+            embedder=embedder,
         )
         print(f"  [send] parsed.kind={next_parsed.kind}")
 
@@ -172,26 +176,32 @@ async def run(choice: TransportChoice) -> None:
     """Dispatch to the chosen transport(s)."""
     settings = get_settings()
 
-    if choice in {"deepseek", "all"}:
-        print("Starting DeepSeek transport...\n")
-        async with DeepseekTransport(
-            api_key=settings.deepseek_api_key.get_secret_value(),
-            default_model=settings.deepseek_model,
-        ) as ds:
-            await smoke_one(
-                f"DeepSeek/{settings.deepseek_model}",
-                ds,
-                TransportKind.DEEPSEEK,
-            )
+    async with OpenRouterEmbedder(
+        api_key=settings.openrouter_api_key.get_secret_value(),
+        model=settings.openrouter_embedding_model,
+    ) as embedder:
+        if choice in {"deepseek", "all"}:
+            print("Starting DeepSeek transport...\n")
+            async with DeepseekTransport(
+                api_key=settings.deepseek_api_key.get_secret_value(),
+                default_model=settings.deepseek_model,
+            ) as ds:
+                await smoke_one(
+                    f"DeepSeek/{settings.deepseek_model}",
+                    ds,
+                    TransportKind.DEEPSEEK,
+                    embedder,
+                )
 
-    if choice in {"playwright", "all"}:
-        print("Starting Playwright transport...\n")
-        async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
-            await smoke_one(
-                "Playwright/claude.ai",
-                pw,
-                TransportKind.CLAUDE_PLAYWRIGHT,
-            )
+        if choice in {"playwright", "all"}:
+            print("Starting Playwright transport...\n")
+            async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
+                await smoke_one(
+                    "Playwright/claude.ai",
+                    pw,
+                    TransportKind.CLAUDE_PLAYWRIGHT,
+                    embedder,
+                )
 
     print("Smoke complete.")
 

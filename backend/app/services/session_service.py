@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session as DbSession
 
+    from app.services.embedding_service import Embedder
     from app.transport.base import LLMTransport
 
 
@@ -154,6 +155,7 @@ async def start_session(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     transport_kind: TransportKind,
     topic_path: str,
 ) -> tuple[Session, ParsedTurn]:
@@ -214,6 +216,7 @@ async def start_session(
     response, parsed, _ = await _execute_until_terminal(
         db=db,
         transport=transport,
+        embedder=embedder,
         chat=chat,
         response=response,
         parsed=parsed,
@@ -263,6 +266,7 @@ async def send_user_answer(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     session_id: str,
     answer: str,
 ) -> ParsedResponse:
@@ -302,13 +306,16 @@ async def send_user_answer(
             return await answer_retest_question(
                 db=db, transport=transport, session=session, answer=answer
             )
-        return await _send_within_chat(db=db, transport=transport, session=session, answer=answer)
+        return await _send_within_chat(
+            db=db, transport=transport, embedder=embedder, session=session, answer=answer
+        )
 
 
 async def request_next_question(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     session_id: str,
 ) -> ParsedResponse:
     """Send the continue prompt and parse the resulting teaching turn.
@@ -372,13 +379,16 @@ async def request_next_question(
 
         if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
             return await _continue_with_handover(db=db, transport=transport, session=session)
-        return await _continue_within_chat(db=db, transport=transport, session=session)
+        return await _continue_within_chat(
+            db=db, transport=transport, embedder=embedder, session=session
+        )
 
 
 async def _continue_within_chat(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     session: Session,
 ) -> ParsedResponse:
     """Send the continue prompt inside the existing chat.
@@ -436,6 +446,7 @@ async def _continue_within_chat(
     response, parsed, after_tools_index = await _execute_until_terminal(
         db=db,
         transport=transport,
+        embedder=embedder,
         chat=chat,
         response=response,
         parsed=parsed,
@@ -467,6 +478,7 @@ async def _send_within_chat(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     session: Session,
     answer: str,
 ) -> ParsedResponse:
@@ -530,6 +542,7 @@ async def _send_within_chat(
     response, parsed, after_tools_index = await _execute_until_terminal(
         db=db,
         transport=transport,
+        embedder=embedder,
         chat=chat,
         response=response,
         parsed=parsed,
@@ -889,6 +902,7 @@ async def _execute_until_terminal(
     *,
     db: DbSession,
     transport: LLMTransport[Any],
+    embedder: Embedder,
     chat: Any,
     response: TransportResponse,
     parsed: ParsedResponse,
@@ -930,7 +944,7 @@ async def _execute_until_terminal(
         results: list[ToolResult] = []
         for call in parsed.calls:
             try:
-                output = await execute_tool_call(db, call)
+                output = await execute_tool_call(db, call, embedder)
                 content = output.model_dump_json()
             except ToolHandlerError as e:
                 # Roll back first so pending writes from the caller (e.g.

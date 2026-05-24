@@ -30,6 +30,7 @@ from typing import Annotated, Literal
 from app.models.enums import (  # noqa: TC002
     Difficulty,
     DomainKind,
+    EmbeddingSourceType,
     GradingVerdict,
     LearningMode,
     SessionState,
@@ -152,6 +153,29 @@ class GetStaleTopicsInput(BaseModel):
 
     days_threshold: int = Field(default=14, ge=1, le=365)
     limit: int = Field(default=10, ge=1, le=50)
+
+
+class SearchCorpusInput(BaseModel):
+    """Input for search_corpus.
+
+    Semantic search over the embedding corpus: the user's learned
+    items and any ingested documents. Use to check whether a
+    question has been asked before (dedup) or to find related
+    material the user has already covered or noted.
+
+    source_type filters to one corpus kind: "learned_item" for past
+    questions, "document_chunk" for ingested notes. Omit to search
+    everything.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str = Field(min_length=1, max_length=2000, description="The search query text.")
+    limit: int = Field(default=5, ge=1, le=20, description="Max hits to return.")
+    source_type: EmbeddingSourceType | None = Field(
+        default=None,
+        description='Filter to "learned_item" or "document_chunk"; omit for all.',
+    )
 
 
 # ---------- Tool outputs ----------
@@ -339,6 +363,30 @@ class GetStaleTopicsOutput(BaseModel):
     topics: list[StaleTopicInfo]
 
 
+class SearchHitInfo(BaseModel):
+    """One search hit in tool output.
+
+    content is the matched text (a learned item's question+answer or
+    a document chunk). score is cosine similarity in 0..1, higher is
+    more similar. source_type tells the LLM whether the hit is a past
+    question or an ingested note.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_type: EmbeddingSourceType
+    content: str
+    score: float
+
+
+class SearchCorpusOutput(BaseModel):
+    """Output for search_corpus. Hits ordered most-similar first."""
+
+    model_config = ConfigDict(frozen=True)
+
+    hits: list[SearchHitInfo]
+
+
 class GetRecentSessionsOutput(BaseModel):
     """Output for get_recent_sessions."""
 
@@ -360,6 +408,7 @@ type ToolName = Literal[
     "get_recent_sessions",
     "get_weak_topics",
     "get_stale_topics",
+    "search_corpus",
 ]
 
 
@@ -431,6 +480,13 @@ class GetStaleTopicsCall(BaseModel):
     id: str | None = None
 
 
+class SearchCorpusCall(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    name: Literal["search_corpus"] = "search_corpus"
+    args: SearchCorpusInput
+    id: str | None = None
+
+
 type ToolCall = Annotated[
     ListDomainsCall
     | CreateDomainCall
@@ -439,6 +495,7 @@ type ToolCall = Annotated[
     | GetUserKnowledgeSummaryCall
     | GetRecentSessionsCall
     | GetWeakTopicsCall
-    | GetStaleTopicsCall,
+    | GetStaleTopicsCall
+    | SearchCorpusCall,
     Field(discriminator="name"),
 ]

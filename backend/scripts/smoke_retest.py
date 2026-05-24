@@ -57,6 +57,7 @@ from app.models import (
     TransportKind,
 )
 from app.schemas.parsed_response import ParsedGrading, ParsedSessionEnd, ParsedTurn
+from app.services.embedding_service import OpenRouterEmbedder
 from app.services.retest_service import RetestServiceError, start_retest
 from app.services.session_service import (
     OPEN_ANSWER_PLACEHOLDER,
@@ -214,6 +215,7 @@ async def _walk_retest(
     transport: LLMTransport[Any],
     transport_kind: TransportKind,
     source_session: Session,
+    embedder: OpenRouterEmbedder,
 ) -> Session:
     """Run a full retest cycle: start, loop answer/next, return retest session.
 
@@ -244,6 +246,7 @@ async def _walk_retest(
             transport=transport,
             session_id=retest_session.id,
             answer=our_answer,
+            embedder=embedder,
         )
         # The retest grading flow always returns ParsedGrading.
         # ParsedSessionEnd lands from request_next_question, not here.
@@ -269,6 +272,7 @@ async def _walk_retest(
             db=db,
             transport=transport,
             session_id=retest_session.id,
+            embedder=embedder,
         )
 
         is_last = i == len(SOURCE_QUESTIONS)
@@ -331,6 +335,7 @@ async def smoke_one(
     name: str,
     transport: LLMTransport[Any],
     transport_kind: TransportKind,
+    embedder: OpenRouterEmbedder,
 ) -> None:
     """Run the full retest smoke against the given transport."""
     print(f"=== {name} ===")
@@ -339,7 +344,7 @@ async def smoke_one(
         source = _seed_source_session(db)
         source_id = source.id
 
-        retest = await _walk_retest(db, transport, transport_kind, source)
+        retest = await _walk_retest(db, transport, transport_kind, source, embedder)
 
         # Capture the threshold just before approve. Bump
         # has to land after this.
@@ -369,26 +374,32 @@ async def run(choice: TransportChoice) -> None:
 
     _print_seeded_summary()
 
-    if choice in {"deepseek", "all"}:
-        print("Starting DeepSeek transport...\n")
-        async with DeepseekTransport(
-            api_key=settings.deepseek_api_key.get_secret_value(),
-            default_model=settings.deepseek_model,
-        ) as ds:
-            await smoke_one(
-                f"DeepSeek/{settings.deepseek_model}",
-                ds,
-                TransportKind.DEEPSEEK,
-            )
+    async with OpenRouterEmbedder(
+        api_key=settings.openrouter_api_key.get_secret_value(),
+        model=settings.openrouter_embedding_model,
+    ) as embedder:
+        if choice in {"deepseek", "all"}:
+            print("Starting DeepSeek transport...\n")
+            async with DeepseekTransport(
+                api_key=settings.deepseek_api_key.get_secret_value(),
+                default_model=settings.deepseek_model,
+            ) as ds:
+                await smoke_one(
+                    f"DeepSeek/{settings.deepseek_model}",
+                    ds,
+                    TransportKind.DEEPSEEK,
+                    embedder,
+                )
 
-    if choice in {"playwright", "all"}:
-        print("Starting Playwright transport...\n")
-        async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
-            await smoke_one(
-                "Playwright/claude.ai",
-                pw,
-                TransportKind.CLAUDE_PLAYWRIGHT,
-            )
+        if choice in {"playwright", "all"}:
+            print("Starting Playwright transport...\n")
+            async with PlaywrightClaudeTransport(settings.chrome_profile_path) as pw:
+                await smoke_one(
+                    "Playwright/claude.ai",
+                    pw,
+                    TransportKind.CLAUDE_PLAYWRIGHT,
+                    embedder,
+                )
 
     print("Smoke complete.")
 
