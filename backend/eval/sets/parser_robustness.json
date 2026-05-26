@@ -1,0 +1,106 @@
+{
+  "eval_kind": "parser",
+  "name": "parser_robustness",
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "clean-turn",
+      "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---PREREQUISITES---\nNONE\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item to the end of a list.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {
+        "outcome": "parses_to",
+        "kind": "turn",
+        "fields": {"topic_path": "Python > Basics > Lists", "difficulty": "beginner"}
+      },
+      "provenance": "hand-written",
+      "tags": ["happy-path"]
+    },
+    {
+      "id": "leading-prose-tolerated",
+      "raw": "Sure, here is your next question:\n\n---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---PREREQUISITES---\nNONE\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {"outcome": "parses_to", "kind": "turn"},
+      "provenance": "hand-written",
+      "tags": ["leading-text", "g76"]
+    },
+    {
+      "id": "fields-out-of-order-raises",
+      "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---MODE---\nflashcard\n---PREREQUISITES---\nNONE\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {"outcome": "raises", "message_contains": "expected"},
+      "provenance": "hand-written",
+      "tags": ["field-order", "g85"]
+    },
+    {
+      "id": "missing-field-raises",
+      "raw": "---TOPIC---\nPython > Basics\n---END---",
+      "expected": {"outcome": "raises", "message_contains": "fields"},
+      "provenance": "hand-written",
+      "tags": ["missing-field"]
+    },
+    {
+      "id": "invalid-difficulty-raises",
+      "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nexpert\n---PREREQUISITES---\nNONE\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {"outcome": "raises", "message_contains": "Invalid DIFFICULTY"},
+      "provenance": "hand-written",
+      "tags": ["invalid-enum"]
+    },
+    {
+      "id": "unknown-delimiter-raises",
+      "raw": "---NONSENSE---\nsome content\n---END---",
+      "expected": {"outcome": "raises", "message_contains": "Unknown leading delimiter"},
+      "provenance": "hand-written",
+      "tags": ["unknown-delimiter"]
+    },
+    {
+      "id": "malformed-prerequisite-raises",
+      "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---PREREQUISITES---\nPython > Basics no colon here\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {"outcome": "raises", "message_contains": "colon"},
+      "provenance": "hand-written",
+      "tags": ["malformed-prerequisite"]
+    },
+    {
+      "id": "sentinel-cleared-field",
+      "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---PREREQUISITES---\nNONE\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
+      "expected": {
+        "outcome": "parses_to",
+        "kind": "turn",
+        "fields": {"requirements": "None", "followup": "None"}
+      },
+      "provenance": "hand-written",
+      "tags": ["sentinel"]
+    },
+    {
+      "id": "session-end-round-trips",
+      "raw": "---SESSION_END_PROPOSAL---\nYou have covered list basics well.\n---END---",
+      "expected": {"outcome": "parses_to", "kind": "session_end"},
+      "provenance": "hand-written",
+      "tags": ["kind-coverage"]
+    },
+    {
+      "id": "grading-round-trips",
+      "raw": "---GRADING---\ncorrect\n---GRADING_EXPLANATION---\nThat is right, append adds to the end.\n---GRADING_EXPLANATION_CODE---\nNONE\n---END---",
+      "expected": {"outcome": "parses_to", "kind": "grading"},
+      "provenance": "hand-written",
+      "tags": ["kind-coverage"]
+    },
+    {
+      "id": "handover-round-trips",
+      "raw": "---HANDOVER---\nDOMAIN_FOCUS: Python\nCOVERED: list basics (beginner)\nLAST_QUESTION: append vs extend\nNEXT_PLANNED: slicing\nOPEN_THREADS: none\nUSER_STATE: ready to advance\n---END_HANDOVER---",
+      "expected": {"outcome": "parses_to", "kind": "handover"},
+      "provenance": "hand-written",
+      "tags": ["kind-coverage"]
+    },
+    {
+      "id": "proposal-round-trips",
+      "raw": "---PROPOSAL---\nTOPIC_PATH: Python > Basics > Lists\nREASONING: weakest recent topic by score\n---END_PROPOSAL---",
+      "expected": {"outcome": "parses_to", "kind": "proposal"},
+      "provenance": "hand-written",
+      "tags": ["kind-coverage"]
+    },
+    {
+      "id": "tool-call-round-trips",
+      "raw": "---TOOL_CALL---\n{\"name\": \"search_corpus\", \"args\": {\"query\": \"list append\", \"limit\": 5}}\n---END---",
+      "expected": {"outcome": "parses_to", "kind": "tool_call"},
+      "provenance": "hand-written",
+      "tags": ["kind-coverage"]
+    }
+  ]
+}
