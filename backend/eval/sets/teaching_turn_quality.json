@@ -1,0 +1,40 @@
+{
+  "eval_kind": "teaching",
+  "name": "teaching_turn_quality",
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "python-lists-beginner-flashcard",
+      "setup": {
+        "topic_path": "Python > Basics > Lists",
+        "mode": "flashcard",
+        "difficulty": "beginner"
+      },
+      "rubric": "The turn should pose one clear, self-contained question about Python list basics suitable for a beginner. It should target a single concept, not bundle several. The expected answer should be correct and match the question. Score high when the question is focused, unambiguous, and beginner-appropriate; score low when it is vague, compound, mismatched to its answer, or pitched above a beginner.",
+      "pass_threshold": 0.6,
+      "tags": ["python", "beginner"]
+    },
+    {
+      "id": "system-design-caching-intermediate-explain",
+      "setup": {
+        "topic_path": "System Design > Caching > Cache Invalidation",
+        "mode": "explain_back",
+        "difficulty": "intermediate"
+      },
+      "rubric": "The turn should prompt the learner to explain a cache-invalidation concept in their own words, appropriate for someone with intermediate system-design knowledge. A good explain_back prompt asks for reasoning, not a one-word fact. Score high when the prompt invites a substantive explanation at the right level; score low when it asks for a trivial recall answer, is too vague to answer, or is pitched at the wrong level.",
+      "pass_threshold": 0.6,
+      "tags": ["system-design", "intermediate"]
+    },
+    {
+      "id": "sql-joins-intermediate-code",
+      "setup": {
+        "topic_path": "Databases > SQL > Joins",
+        "mode": "code_with_explanation",
+        "difficulty": "intermediate"
+      },
+      "rubric": "The turn should ask the learner to write or reason about SQL join code at an intermediate level. For code_with_explanation the question should call for both a code answer and the reasoning behind it. Score high when the task is concrete, solvable, and genuinely exercises join understanding; score low when it is underspecified, trivial, or does not actually require a join.",
+      "pass_threshold": 0.6,
+      "tags": ["databases", "intermediate"]
+    }
+  ]
+}
