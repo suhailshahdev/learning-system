@@ -427,26 +427,38 @@ def _collect_fields(
     end_marker: str,
     raw: str,
 ) -> dict[str, str]:
-    """Build a {marker: content} dict, enforcing the expected sequence."""
+    """Build a {marker: content} dict, enforcing field presence.
+
+    Markers may appear in any order: once collected into a dict,
+    position carries no information, every consumer keys by name.
+    What matters is that every expected marker is present exactly
+    once and no unexpected marker appears. Order-strictness used to
+    be enforced here, but real LLMs reorder fields with valid
+    content, and rejecting that costs a usable turn for nothing.
+    The leading marker that selects the response kind is checked
+    upstream in parse_response, before this runs.
+    """
     if not blocks or blocks[-1][0] != end_marker:
         raise ParseError(f"Response must terminate with ---{end_marker}---.", raw_response=raw)
 
     field_blocks = blocks[:-1]
-    if len(field_blocks) != len(expected):
+
+    out: dict[str, str] = {}
+    for marker, content in field_blocks:
+        if marker in out:
+            raise ParseError(f"Duplicate field {marker!r}.", raw_response=raw)
+        out[marker] = content
+
+    expected_set = set(expected)
+    seen = set(out)
+    missing = expected_set - seen
+    unexpected = seen - expected_set
+    if missing or unexpected:
         raise ParseError(
-            f"Expected {len(expected)} fields, got {len(field_blocks)}: "
-            f"{[m for m, _ in field_blocks]}",
+            f"Field mismatch. Missing: {sorted(missing)}; unexpected: {sorted(unexpected)}.",
             raw_response=raw,
         )
 
-    out: dict[str, str] = {}
-    for i, (marker, content) in enumerate(field_blocks):
-        if marker != expected[i]:
-            raise ParseError(
-                f"Field {i} expected {expected[i]!r}, got {marker!r}.",
-                raw_response=raw,
-            )
-        out[marker] = content
     return out
 
 

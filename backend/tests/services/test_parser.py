@@ -461,14 +461,24 @@ class TestParseErrors:
         with pytest.raises(ParseError, match="terminate with ---END---"):
             parse_response(text)
 
-    def test_turn_wrong_field_order_raises(self) -> None:
-        # Swap DIFFICULTY and TOPIC blocks
+    def test_turn_reordered_non_leading_fields_parses(self) -> None:
+        # Field order is not load-bearing once the leading marker pins
+        # the kind: real LLMs reorder valid-content fields, and the
+        # parser keys fields by name, so a reordered turn must parse.
+        # Swap MODE before PREREQUISITES.
         text = TURN_FULL.replace(
-            "---TOPIC---\nPython > Data Types > Integers\n---DIFFICULTY---\nbeginner",
-            "---DIFFICULTY---\nbeginner\n---TOPIC---\nPython > Data Types > Integers",
+            "---PREREQUISITES---\nPython > Basics:beginner, Python > Variables:beginner\n"
+            "---MODE---\nflashcard",
+            "---MODE---\nflashcard\n"
+            "---PREREQUISITES---\nPython > Basics:beginner, Python > Variables:beginner",
         )
-        with pytest.raises(ParseError):
-            parse_response(text)
+        result = parse_response(text)
+        assert isinstance(result, ParsedTurn)
+        assert result.mode == LearningMode.FLASHCARD
+        assert len(result.prerequisites) == 2
+        assert result.prerequisites[0].topic_path == "Python > Basics"
+        assert result.difficulty == Difficulty.BEGINNER
+        assert result.topic_path == "Python > Data Types > Integers"
 
     def test_invalid_difficulty_raises(self) -> None:
         text = TURN_FULL.replace("beginner", "expert")
