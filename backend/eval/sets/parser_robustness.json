@@ -19,19 +19,23 @@
       "raw": "Sure, here is your next question:\n\n---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---PREREQUISITES---\nNONE\n---MODE---\nflashcard\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
       "expected": {"outcome": "parses_to", "kind": "turn"},
       "provenance": "hand-written",
-      "tags": ["leading-text", "g76"]
+      "tags": ["leading-text"]
     },
     {
-      "id": "fields-out-of-order-raises",
+      "id": "fields-out-of-order-parses",
       "raw": "---TOPIC---\nPython > Basics > Lists\n---DIFFICULTY---\nbeginner\n---MODE---\nflashcard\n---PREREQUISITES---\nNONE\n---QUESTION---\nWhat does append do?\n---QUESTION_CODE---\nNONE\n---EXPECTED_ANSWER---\nAdds an item.\n---REQUIREMENTS---\nNONE\n---FOLLOWUP---\nNONE\n---TAGS---\nlists\n---END---",
-      "expected": {"outcome": "raises", "message_contains": "expected"},
+      "expected": {
+        "outcome": "parses_to",
+        "kind": "turn",
+        "fields": {"mode": "flashcard", "topic_path": "Python > Basics > Lists"}
+      },
       "provenance": "hand-written",
-      "tags": ["field-order", "g85"]
+      "tags": ["field-order"]
     },
     {
       "id": "missing-field-raises",
       "raw": "---TOPIC---\nPython > Basics\n---END---",
-      "expected": {"outcome": "raises", "message_contains": "fields"},
+      "expected": {"outcome": "raises", "message_contains": "Missing"},
       "provenance": "hand-written",
       "tags": ["missing-field"]
     },

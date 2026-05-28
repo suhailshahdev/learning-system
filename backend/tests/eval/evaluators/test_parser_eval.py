@@ -19,7 +19,7 @@ from app.eval.evaluators.parser_eval import evaluate_parser_item
 from app.eval.schemas import ParserEvalItem, ScoreOutcome
 
 # A clean teaching turn in wire format. Reused across tests that need a
-# parse to succeed. Field order matches the parser's expected sequence.
+# parse to succeed.
 _CLEAN_TURN = (
     "---TOPIC---\n"
     "Python > Basics > Lists\n"
@@ -113,9 +113,9 @@ def test_expected_raise_got_parse_fails() -> None:
 
 
 def test_raise_message_substring_matches() -> None:
-    # A turn missing fields raises with a message naming the field count.
+    # A turn missing fields raises with a message naming the missing fields.
     truncated = "---TOPIC---\nPython > Basics\n---END---"
-    item = _item(truncated, {"outcome": "raises", "message_contains": "fields"})
+    item = _item(truncated, {"outcome": "raises", "message_contains": "Missing"})
     assert evaluate_parser_item(item).outcome == ScoreOutcome.PASS
 
 
