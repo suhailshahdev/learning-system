@@ -23,6 +23,7 @@ Run from backend/ with:
     uv run python scripts/smoke_teaching_eval.py
     uv run python scripts/smoke_teaching_eval.py --swap
     uv run python scripts/smoke_teaching_eval.py --n-runs=3
+    uv run python scripts/smoke_teaching_eval.py --verbose
 
 Requires both transports configured:
   - DEEPSEEK_API_KEY in .env or environment.
@@ -39,9 +40,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core.config import get_settings
+from app.eval.judge import JudgeError, judge_teaching_turn
 from app.eval.loader import load_set
 from app.eval.runner import TeachingRunContext, run_set
 from app.eval.schemas import TeachingEvalSet
+from app.eval.teaching_driver import TeachingDriverError, drive_teaching_turn
 from app.transport import TransportError
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
@@ -63,7 +66,54 @@ def _print_record(record_scores: list[ItemScore], set_name: str) -> None:
         print(f"      detail: {score.detail}")
 
 
-async def run(*, swap: bool, n_runs: int) -> None:
+async def _diagnose(
+    loaded: TeachingEvalSet,
+    teaching_transport: LLMTransport[Any],
+    judge_transport: LLMTransport[Any],
+    n_runs: int,
+) -> None:
+    """Print each teaching turn and the judge's rationale, per run.
+
+    Bypasses the aggregation: calls the driver and judge directly so the
+    actual turn the teacher produced and the reason the judge scored it
+    are visible. A score with no turn and no rationale is uninterpretable.
+    This is the loop that makes a low score diagnosable (was the mode
+    wrong, the difficulty off, the rubric harsh, or the turn genuinely
+    weak).
+    """
+    for item in loaded.items:
+        print(f"\n  === {item.id} ===")
+        print(f"  setup: mode={item.setup.mode.value} difficulty={item.setup.difficulty.value}")
+        print(f"  rubric: {item.rubric}")
+        for run_index in range(n_runs):
+            print(f"\n  --- run {run_index + 1} ---")
+            try:
+                turn = await drive_teaching_turn(teaching_transport, item.setup)
+            except TeachingDriverError as e:
+                print(f"  DRIVER ERROR: {e.message}")
+                if e.cause is not None:
+                    raw = getattr(e.cause, "raw_response", None)
+                    if raw is not None:
+                        print(f"  RAW (repr, first 400): {raw[:400]!r}")
+                continue
+            print(f"  turn.mode: {turn.mode.value}  (setup wanted: {item.setup.mode.value})")
+            print(
+                f"  turn.difficulty: {turn.difficulty.value}  (setup wanted: {item.setup.difficulty.value})"
+            )
+            print(f"  turn.question: {turn.question!r}")
+            print(f"  turn.expected_answer: {(turn.expected_answer or 'OPEN')!r}")
+            try:
+                score, rationale = await judge_teaching_turn(
+                    judge_transport, item.setup, turn, item.rubric
+                )
+            except JudgeError as e:
+                print(f"  JUDGE ERROR: {e.message}")
+                continue
+            print(f"  judge score: {score}")
+            print(f"  judge rationale: {rationale!r}")
+
+
+async def run(*, swap: bool, n_runs: int, verbose: bool) -> None:
     """Run the teaching set with DeepSeek and Playwright paired as teacher/judge."""
     settings = get_settings()
 
@@ -96,6 +146,11 @@ async def run(*, swap: bool, n_runs: int) -> None:
             transport_name = "deepseek"
             model_under_test = settings.deepseek_model
             judge_model = "claude.ai"
+
+        if verbose:
+            await _diagnose(loaded, teaching_transport, judge_transport, n_runs)
+            print("\nDiagnostic complete.")
+            return
 
         context = TeachingRunContext(
             teaching_transport=teaching_transport,
@@ -131,10 +186,15 @@ def main() -> None:
         default=3,
         help="Judged runs per item (default: 3, lower than prod default for a quick smoke).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print each teaching turn and judge rationale instead of aggregated scores.",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(swap=args.swap, n_runs=args.n_runs))
+        asyncio.run(run(swap=args.swap, n_runs=args.n_runs, verbose=args.verbose))
     except TransportError as e:
         print(f"\nTransport error: {e.message}")
         if e.cause is not None:
