@@ -12,7 +12,11 @@ parses to a non-teaching kind.
 from __future__ import annotations
 
 from app.eval.schemas import TeachingSetup
-from app.eval.teaching_driver import TeachingDriverError, drive_teaching_turn
+from app.eval.teaching_driver import (
+    TeachingDriverError,
+    _build_eval_first_prompt,
+    drive_teaching_turn,
+)
 from app.models.enums import Difficulty, LearningMode
 from app.transport.base import TransportError
 
@@ -59,6 +63,21 @@ async def test_drives_teaching_turn() -> None:
     assert parsed.kind == "turn"
     assert parsed.topic_path == "Python > Basics > Lists"
     assert parsed.mode == LearningMode.FLASHCARD
+
+
+def test_eval_prompt_pins_mode_and_difficulty() -> None:
+    # The prompt must name the setup's mode and difficulty: the rubric is
+    # written for them, and the smoke showed the teacher drifts to
+    # flashcard/beginner without an explicit instruction not to.
+    setup = TeachingSetup(
+        topic_path="System Design > Caching > Cache Invalidation",
+        mode=LearningMode.EXPLAIN_BACK,
+        difficulty=Difficulty.INTERMEDIATE,
+    )
+    prompt = _build_eval_first_prompt(setup)
+    assert "explain_back" in prompt
+    assert "intermediate" in prompt
+    assert "System Design > Caching > Cache Invalidation" in prompt
 
 
 async def test_transport_failure_raises_driver_error() -> None:

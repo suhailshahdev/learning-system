@@ -11,7 +11,13 @@ The intro is static and declares the same delimited output format the
 parser expects. It duplicates that format spec rather than importing
 build_intro, for the same reason retest grading has its own intro:
 build_intro is db-coupled and advertises tools and domain context
-this driver must not include. Format drift is caught structurally: every
+this driver must not include.
+
+The first prompt pins the setup's mode and difficulty, unlike the session's
+build_first_prompt which lets the teacher choose. The rubric is written for
+a specific mode and level. A free-choice prompt makes the teacher default
+to flashcard and beginner and the rubric then scores a mode mismatch
+instead of teaching quality. Format drift is caught structurally: every
 driver call parses its response through the real parser, so a drifted
 format spec produces a parse failure in the driver's own tests.
 
@@ -25,7 +31,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.prompts.first_prompt import build_first_prompt
 from app.schemas.parsed_response import ParsedTurn
 from app.services.parser import ParseError, parse_response
 from app.transport.base import TransportError
@@ -69,6 +74,30 @@ The format is:
 """
 
 
+def _build_eval_first_prompt(setup: TeachingSetup) -> str:
+    """Build the eval's first prompt, pinning mode and difficulty.
+
+    Distinct from the session's build_first_prompt, which deliberately lets
+    the teacher pick its own mode and difficulty: the session wants the
+    teacher to choose what fits, the eval needs them fixed so the rubric,
+    which is written for a specific mode and level, judges a turn produced
+    at that mode and level. A free-choice prompt makes the teacher default
+    to flashcard and beginner regardless of the setup, and the rubric then
+    scores a mode mismatch rather than teaching quality.
+    """
+    return f"""\
+Teach the topic: {setup.topic_path}
+
+Use the {setup.mode.value} learning mode. Pitch the question at
+{setup.difficulty.value} difficulty. Do not substitute a different mode or
+difficulty; the {setup.mode.value} mode at {setup.difficulty.value} level
+is required.
+
+Reply with exactly one teaching turn in the delimited format declared in
+the system intro.
+"""
+
+
 class TeachingDriverError(Exception):
     """The teaching driver could not produce a teaching turn.
 
@@ -92,7 +121,7 @@ async def drive_teaching_turn(transport: LLMTransport[Any], setup: TeachingSetup
     ParsedTurn. Raises TeachingDriverError if the transport fails, the
     response does not parse, or it parses to a non-teaching-turn kind.
     """
-    first_prompt = build_first_prompt(setup.topic_path)
+    first_prompt = _build_eval_first_prompt(setup)
 
     try:
         _chat, response = await transport.start_new_chat(_TEACHING_DRIVER_INTRO, first_prompt)
