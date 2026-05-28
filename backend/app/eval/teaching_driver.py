@@ -71,6 +71,11 @@ The format is:
 ---TAGS---
 <comma-separated tags, or NONE>
 ---END---
+
+Every field marker shown above must appear in your response. Write
+the marker with NONE on the next line when the field has no content;
+do not omit it. Always emit the closing ---END---. Do not write
+anything before the first marker or after ---END---.
 """
 
 
