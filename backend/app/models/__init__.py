@@ -23,6 +23,7 @@ from app.models.enums import (
 )
 from app.models.error_log import ErrorLog
 from app.models.learned_item import LearnedItem
+from app.models.llm_call import LLMCall
 from app.models.session import Session
 from app.models.session_turn import SessionTurn
 from app.models.teaching_preference import TeachingPreference
@@ -42,6 +43,7 @@ __all__ = [
     "EmbeddingSourceType",
     "ErrorLog",
     "GradingVerdict",
+    "LLMCall",
     "LearnedItem",
     "LearnedItemStatus",
     "LearningMode",
