@@ -15,8 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import diagnose, documents, health, home, search, sessions, topics
 from app.core.config import Settings, get_settings
+from app.core.db import SessionLocal
+from app.models import TransportKind
 from app.services.embedding_service import OpenRouterEmbedder
+from app.services.llm_call_recorder import WritingRecorder
 from app.transport.deepseek_impl import DeepseekTransport
+from app.transport.instrumented import InstrumentedTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
 
 
@@ -34,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     profile, missing DeepSeek key) the app fails to start.
     """
     settings: Settings = app.state.settings
+    recorder = WritingRecorder(SessionLocal)
     async with AsyncExitStack() as stack:
         playwright_transport = await stack.enter_async_context(
             PlaywrightClaudeTransport(settings.chrome_profile_path)
@@ -50,9 +55,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 model=settings.openrouter_embedding_model,
             )
         )
-
-        app.state.playwright_transport = playwright_transport
-        app.state.deepseek_transport = deepseek_transport
+        # Wrap each transport so every round-trip is recorded. The
+        # wrapper cannot see transport_kind or model through the
+        # Protocol, so they are supplied here where the concrete
+        # transport is known. claude.ai exposes no model id.
+        app.state.playwright_transport = InstrumentedTransport(
+            playwright_transport,
+            recorder,
+            TransportKind.CLAUDE_PLAYWRIGHT,
+            model=None,
+        )
+        app.state.deepseek_transport = InstrumentedTransport(
+            deepseek_transport,
+            recorder,
+            TransportKind.DEEPSEEK,
+            model=settings.deepseek_model,
+        )
         app.state.embedder = embedder
         yield
 
