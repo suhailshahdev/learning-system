@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import diagnose, documents, health, home, search, sessions, topics
 from app.core.config import Settings, get_settings
 from app.core.db import SessionLocal
+from app.core.telemetry import configure_tracing
 from app.models import TransportKind
 from app.services.embedding_service import OpenRouterEmbedder
 from app.services.llm_call_recorder import WritingRecorder
@@ -38,6 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     profile, missing DeepSeek key) the app fails to start.
     """
     settings: Settings = app.state.settings
+    if settings.enable_tracing:
+        configure_tracing()
     recorder = WritingRecorder(SessionLocal)
     async with AsyncExitStack() as stack:
         playwright_transport = await stack.enter_async_context(

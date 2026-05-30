@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         default=["http://localhost:5173"],
         description=(
             "Origins permitted to call the API. The Vite dev server runs on "
-            "5173; production deployments (if ever) should override this."
+            "5173, production deployments (if ever) should override this."
         ),
     )
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
             "Persistent Chrome profile directory used by the Playwright "
             "transport. Holds login cookies and session state for "
             "claude.ai. The directory contains active session credentials "
-            "after login; do not commit, share, or sync it."
+            "after login. Do not commit, share, or sync it."
         ),
     )
 
@@ -90,6 +90,16 @@ class Settings(BaseSettings):
             "to a different-dimension model is a migration, not a flip."
         ),
     )
+    enable_tracing: bool = Field(
+        default=False,
+        description=(
+            "Turn on OpenTelemetry tracing for LLM transport calls. "
+            "Off by default so tests and eval runs install no global "
+            "tracer provider. When on, the lifespan exports spans to "
+            "the console, an OTLP exporter for a real backend is a "
+            "later addition."
+        ),
+    )
 
     @property
     def is_local(self) -> bool:
@@ -102,7 +112,7 @@ def get_settings() -> Settings:
     """Return the application's settings singleton.
 
     Cached so the .env file is read once per process. Use this in dependency
-    injection rather than constructing Settings() directly; that keeps tests
+    injection rather than constructing Settings() directly, that keeps tests
     able to override it.
     """
     return Settings()
