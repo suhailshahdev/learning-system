@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router";
 
 import { Browse } from "@/pages/Browse";
 import { Home } from "@/pages/Home";
+import { LLMCalls } from "@/pages/LLMCalls";
 import { Search } from "@/pages/Search";
 import { Session } from "@/pages/Session";
 import { Topics } from "@/pages/Topics";
@@ -16,6 +17,7 @@ function App(): React.JSX.Element {
       <Route path="/sessions" element={<Browse />} />
       <Route path="/search" element={<Search />} />
       <Route path="/topics" element={<Topics />} />
+      <Route path="/admin/llm-calls" element={<LLMCalls />} />
     </Routes>
   );
 }
