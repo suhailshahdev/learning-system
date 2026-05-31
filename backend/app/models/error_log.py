@@ -24,6 +24,15 @@ class ErrorLog(Base, UUIDPrimaryKey, Timestamps):
     session_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("session.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Shared join key to llm_call. Set from the turn's trace context
+    # when the error is logged inside a session-service call, so an
+    # error and the LLM call that led to it carry the same id. Null
+    # for errors logged outside any traced turn and for historical
+    # rows written before tracing existed. Indexed for the admin
+    # browse's error-to-call correlation.
+    trace_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, default=None, index=True
+    )
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

@@ -34,6 +34,7 @@ from app.core.telemetry import (
     ATTR_GEN_AI_SYSTEM,
     get_tracer,
 )
+from app.core.trace_context import current_trace_id
 from app.models import TransportKind
 from app.services.llm_call_recorder import LLMCallData
 from app.transport.base import TransportError, TransportResponse
@@ -217,12 +218,16 @@ def _gen_ai_system_for(transport_kind: TransportKind) -> str:
 def _current_trace_id() -> str:
     """Trace id for the recorder row.
 
-    Returns the active span's trace id as 32-char hex when tracing
-    is on. When tracing is off the active span is non-recording and
-    its trace id is all-zeros, which is meaningless as a row id, so
-    fall back to a fresh uuid4 hex. Either way the value is a
-    32-char hex string the row column holds uniformly.
+    Prefers the active turn's trace id when a session-service turn is
+    in progress, so every llm_call in one turn shares the id the
+    error logger will also use. Outside a turn trace (defensive; no
+    such path today) falls back to the active span's id when tracing
+    is on, or a fresh uuid4 hex when off. Either way a 32-char hex
+    string the row column holds uniformly.
     """
+    turn_id = current_trace_id()
+    if turn_id is not None:
+        return turn_id
     span_context = trace.get_current_span().get_span_context()
     if span_context.trace_id != 0:
         return format(span_context.trace_id, "032x")

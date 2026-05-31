@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from app.core.trace_context import current_trace_id, turn_trace
 from app.models import (
     ErrorLog,
     GradingVerdict,
@@ -141,6 +142,7 @@ def _log_service_error(
             kind=kind,
             message=message,
             context=context or {},
+            trace_id=current_trace_id(),
         )
         db.add(row)
         db.commit()
@@ -172,94 +174,97 @@ async def start_session(
 
     Returns the persisted Session and the parsed first turn.
     """
-    topic = get_or_create_topic(db, topic_path)
+    with turn_trace():
+        topic = get_or_create_topic(db, topic_path)
 
-    unmet = check_prerequisites(db, topic_path)
-    if unmet:
-        raise PrereqsUnmetError(unmet)
+        unmet = check_prerequisites(db, topic_path)
+        if unmet:
+            raise PrereqsUnmetError(unmet)
 
-    intro = await build_intro(db)
-    first_prompt = build_first_prompt(topic_path)
+        intro = await build_intro(db)
+        first_prompt = build_first_prompt(topic_path)
 
-    try:
-        chat, response = await transport.start_new_chat(intro, first_prompt)
-    except TransportError as e:
-        _log_service_error(
-            db,
-            kind="session.start.transport_failed",
-            message=e.message,
+        try:
+            chat, response = await transport.start_new_chat(intro, first_prompt)
+        except TransportError as e:
+            _log_service_error(
+                db,
+                kind="session.start.transport_failed",
+                message=e.message,
+                session_id=None,
+                context={"transport_kind": transport_kind.value, "topic_path": topic_path},
+            )
+            db.rollback()
+            raise SessionServiceError(
+                f"Transport failed during session start: {e.message}", cause=e
+            ) from e
+
+        try:
+            parsed = _response_to_parsed(response)
+        except Exception as e:
+            _log_service_error(
+                db,
+                kind="session.start.parse_failed",
+                message=str(e),
+                session_id=None,
+                context={
+                    "transport_kind": transport_kind.value,
+                    "topic_path": topic_path,
+                    "raw_response": response.text,
+                },
+            )
+            db.rollback()
+            raise SessionServiceError("Parse failed on first response.", cause=e) from e
+
+        response, parsed, _ = await _execute_until_terminal(
+            db=db,
+            transport=transport,
+            embedder=embedder,
+            chat=chat,
+            response=response,
+            parsed=parsed,
             session_id=None,
-            context={"transport_kind": transport_kind.value, "topic_path": topic_path},
-        )
-        db.rollback()
-        raise SessionServiceError(
-            f"Transport failed during session start: {e.message}", cause=e
-        ) from e
-
-    try:
-        parsed = _response_to_parsed(response)
-    except Exception as e:
-        _log_service_error(
-            db,
-            kind="session.start.parse_failed",
-            message=str(e),
-            session_id=None,
-            context={
-                "transport_kind": transport_kind.value,
-                "topic_path": topic_path,
-                "raw_response": response.text,
-            },
-        )
-        db.rollback()
-        raise SessionServiceError("Parse failed on first response.", cause=e) from e
-
-    response, parsed, _ = await _execute_until_terminal(
-        db=db,
-        transport=transport,
-        embedder=embedder,
-        chat=chat,
-        response=response,
-        parsed=parsed,
-        session_id=None,
-        transport_kind=transport_kind,
-        base_turn_index=0,
-    )
-
-    if not isinstance(parsed, ParsedTurn):
-        _log_service_error(
-            db,
-            kind="session.start.wrong_response_kind",
-            message=f"Expected ParsedTurn, got {parsed.kind!r}.",
-            session_id=None,
-            context={
-                "transport_kind": transport_kind.value,
-                "topic_path": topic_path,
-                "actual_kind": parsed.kind,
-                "expected_kind": "turn",
-            },
-        )
-        db.rollback()
-        raise SessionServiceError(
-            f"Expected a teaching turn on session start, got {parsed.kind!r}.",
+            transport_kind=transport_kind,
+            base_turn_index=0,
         )
 
-    _populate_topic_prerequisites(topic, parsed)
+        if not isinstance(parsed, ParsedTurn):
+            _log_service_error(
+                db,
+                kind="session.start.wrong_response_kind",
+                message=f"Expected ParsedTurn, got {parsed.kind!r}.",
+                session_id=None,
+                context={
+                    "transport_kind": transport_kind.value,
+                    "topic_path": topic_path,
+                    "actual_kind": parsed.kind,
+                    "expected_kind": "turn",
+                },
+            )
+            db.rollback()
+            raise SessionServiceError(
+                f"Expected a teaching turn on session start, got {parsed.kind!r}.",
+            )
 
-    session = _build_session(
-        topic=topic,
-        parsed=parsed,
-        chat=chat,
-        transport_kind=transport_kind,
-    )
-    db.add(session)
-    db.flush()  # populates session.id for FK on the turns
+        _populate_topic_prerequisites(topic, parsed)
 
-    db.add(_build_system_turn(session_id=session.id, intro=intro, first_prompt=first_prompt))
-    db.add(_build_assistant_turn(session_id=session.id, response_text=response.text, parsed=parsed))
+        session = _build_session(
+            topic=topic,
+            parsed=parsed,
+            chat=chat,
+            transport_kind=transport_kind,
+        )
+        db.add(session)
+        db.flush()  # populates session.id for FK on the turns
 
-    db.commit()
-    db.refresh(session)
-    return session, parsed
+        db.add(_build_system_turn(session_id=session.id, intro=intro, first_prompt=first_prompt))
+        db.add(
+            _build_assistant_turn(session_id=session.id, response_text=response.text, parsed=parsed)
+        )
+
+        db.commit()
+        db.refresh(session)
+        return session, parsed
 
 
 async def send_user_answer(
@@ -291,24 +296,25 @@ async def send_user_answer(
     prefetch is the most common trigger).
     """
     async with _session_lock(session_id):
-        session = db.get(Session, session_id)
-        if session is None:
-            raise SessionServiceError(f"Session {session_id!r} not found.")
-        if session.state is not SessionState.IN_PROGRESS:
-            raise SessionServiceError(
-                f"Session {session_id!r} is in state {session.state.value!r}, "
-                "expected in_progress.",
-            )
+        with turn_trace():
+            session = db.get(Session, session_id)
+            if session is None:
+                raise SessionServiceError(f"Session {session_id!r} not found.")
+            if session.state is not SessionState.IN_PROGRESS:
+                raise SessionServiceError(
+                    f"Session {session_id!r} is in state {session.state.value!r}, "
+                    "expected in_progress.",
+                )
 
-        if session.parent_session_id is not None:
-            from app.services.retest_service import answer_retest_question  # noqa: PLC0415
+            if session.parent_session_id is not None:
+                from app.services.retest_service import answer_retest_question  # noqa: PLC0415
 
-            return await answer_retest_question(
-                db=db, transport=transport, session=session, answer=answer
+                return await answer_retest_question(
+                    db=db, transport=transport, session=session, answer=answer
+                )
+            return await _send_within_chat(
+                db=db, transport=transport, embedder=embedder, session=session, answer=answer
             )
-        return await _send_within_chat(
-            db=db, transport=transport, embedder=embedder, session=session, answer=answer
-        )
 
 
 async def request_next_question(
@@ -345,43 +351,44 @@ async def request_next_question(
     instead of crashing on UNIQUE constraint.
     """
     async with _session_lock(session_id):
-        session = db.get(Session, session_id)
-        if session is None:
-            raise SessionServiceError(f"Session {session_id!r} not found.")
-        if session.state is not SessionState.IN_PROGRESS:
-            raise SessionServiceError(
-                f"Session {session_id!r} is in state {session.state.value!r}, "
-                "expected in_progress.",
+        with turn_trace():
+            session = db.get(Session, session_id)
+            if session is None:
+                raise SessionServiceError(f"Session {session_id!r} not found.")
+            if session.state is not SessionState.IN_PROGRESS:
+                raise SessionServiceError(
+                    f"Session {session_id!r} is in state {session.state.value!r}, "
+                    "expected in_progress.",
+                )
+
+            # Important: refresh the session row to pick up any state changes
+            # the first holder of the lock committed. Without this, the
+            # message_count check below would use stale data.
+            db.refresh(session)
+
+            last_turn = (
+                db.query(SessionTurn)
+                .filter(SessionTurn.session_id == session.id)
+                .order_by(SessionTurn.turn_index.desc())
+                .first()
             )
+            if last_turn is None or last_turn.role is not TurnRole.GRADING:
+                raise SessionServiceError(
+                    f"Session {session_id!r} is not awaiting a continue prompt; "
+                    f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
+                    "expected 'grading'.",
+                )
 
-        # Important: refresh the session row to pick up any state changes
-        # the first holder of the lock committed. Without this, the
-        # message_count check below would use stale data.
-        db.refresh(session)
+            if session.parent_session_id is not None:
+                from app.services.retest_service import next_retest_question  # noqa: PLC0415
 
-        last_turn = (
-            db.query(SessionTurn)
-            .filter(SessionTurn.session_id == session.id)
-            .order_by(SessionTurn.turn_index.desc())
-            .first()
-        )
-        if last_turn is None or last_turn.role is not TurnRole.GRADING:
-            raise SessionServiceError(
-                f"Session {session_id!r} is not awaiting a continue prompt; "
-                f"last turn role is {last_turn.role.value if last_turn else 'none'!r}, "
-                "expected 'grading'.",
+                return await next_retest_question(db=db, session=session)
+
+            if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
+                return await _continue_with_handover(db=db, transport=transport, session=session)
+            return await _continue_within_chat(
+                db=db, transport=transport, embedder=embedder, session=session
             )
-
-        if session.parent_session_id is not None:
-            from app.services.retest_service import next_retest_question  # noqa: PLC0415
-
-            return await next_retest_question(db=db, session=session)
-
-        if session.claude_chat_message_count + ESTIMATED_LOOKAHEAD_COST > HANDOVER_THRESHOLD:
-            return await _continue_with_handover(db=db, transport=transport, session=session)
-        return await _continue_within_chat(
-            db=db, transport=transport, embedder=embedder, session=session
-        )
 
 
 async def _continue_within_chat(
