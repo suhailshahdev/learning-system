@@ -137,6 +137,28 @@ class GetWeakTopicsInput(BaseModel):
     sample_size: int = Field(default=3, ge=0, le=10)
 
 
+class MarkForRevisionInput(BaseModel):
+    """Input for mark_for_revision.
+
+    Marks one existing topic for revision by setting its status to
+    needs_revision. The path must reference a topic that already
+    exists: marking a nonexistent topic for revision is meaningless,
+    so the mutate core raises rather than creating one. This differs
+    from create_or_update_topic, which creates on miss because the
+    teaching loop is introducing new topics. Here the user is
+    revising a known weak one.
+
+    This is an agent action input. It is not part of the six-tool
+    teaching surface and has no ToolCall envelope or ToolName entry:
+    the planner reaches it through the bounded plan vocabulary, not
+    through the teaching tool-call wire format.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, max_length=512, description="Domain > ... > Subtopic.")
+
+
 class GetStaleTopicsInput(BaseModel):
     """Input for get_stale_topics.
 

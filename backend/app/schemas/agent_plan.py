@@ -13,9 +13,16 @@ thin and will grow there.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+# Pydantic v2 fails to resolve field types imported under
+# TYPE_CHECKING. The step args reuse the tool input schemas, so they
+# must be runtime imports. Same constraint as parsed_response.py.
+from app.schemas.tools import (  # noqa: TC002 (Pydantic runtime field resolution)
+    GetWeakTopicsInput,
+    MarkForRevisionInput,
+)
+from pydantic import BaseModel, Field
 
 # Step kinds. read steps run during planning and feed evidence,
 # mutate steps run after approval inside the transaction boundary.
@@ -24,22 +31,44 @@ from pydantic import BaseModel
 type StepKind = Literal["read", "mutate"]
 
 
-class PlanStep(BaseModel):
-    """One step in a plan.
+class GetWeakTopicsStep(BaseModel):
+    """A read step that surfaces the user's weak topics.
 
-    tool names the action to dispatch. args is the validated input
-    the orchestrator passes to it. kind decides phase: read steps
-    execute during planning, mutate steps wait for approval.
-
-    Args are kept as a free dict for now because there is one
-    hardcoded step and no planner validating shapes yet. This will be
-    replaced with a discriminated union over the bounded step
-    vocabulary so each tool's args are typed at the schema boundary.
+    kind is pinned to "read" so the orchestrator's phase check
+    (step.kind == "read") routes it to the read pass. tool is the
+    discriminator: it is unique per step variant, where kind is not
+    (every read step shares kind="read").
     """
 
-    kind: StepKind
-    tool: str
-    args: dict[str, object]
+    kind: Literal["read"] = "read"
+    tool: Literal["get_weak_topics"] = "get_weak_topics"
+    args: GetWeakTopicsInput
+
+
+class MarkForRevisionStep(BaseModel):
+    """A mutate step that marks one existing topic for revision.
+
+    kind is pinned to "mutate" so it runs only in the approved mutate
+    pass, never during planning. The target must already exist: the
+    mutate core raises if the path is unknown, and the planner's
+    groundedness guard rejects ungrounded targets before approval.
+    """
+
+    kind: Literal["mutate"] = "mutate"
+    tool: Literal["mark_for_revision"] = "mark_for_revision"
+    args: MarkForRevisionInput
+
+
+# The bounded step vocabulary. The planner composes an ordered
+# sequence from this closed set. It cannot invent tool names or pass
+# free-form args, because each variant pins its tool and types its
+# args to a tool input schema. Pydantic discriminates on tool, and
+# mypy follows in match-case blocks. The union grows as specialists
+# land; the discriminator stays tool.
+type PlanStep = Annotated[
+    GetWeakTopicsStep | MarkForRevisionStep,
+    Field(discriminator="tool"),
+]
 
 
 class Plan(BaseModel):

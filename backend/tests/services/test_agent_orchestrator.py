@@ -1,15 +1,25 @@
 """Tests for the agent orchestrator's logic and the commit-free guarantee.
 
 These cover what runs in the fast suite on in-memory SQLite: the
-read/mutate phase split, the approve gate, dispatch guards, and the
-flush-not-commit guarantee of the agent action tools. The no-op
-recorder is injected so nothing touches SessionLocal.
+read/mutate phase split, the approve gate, and the flush-not-commit
+guarantee of the agent action tool. The no-op recorder is injected so
+nothing touches SessionLocal.
 
 What these deliberately do not cover is the cross-session rollback-
 with-surviving-error invariant. That depends on real Postgres
 rollback semantics and is owned by smoke_agent_orchestrator.py. The
 split is intentional: unit tests own logic and the commit-free
 guarantee, the smoke owns the real-DB transaction contract.
+
+The plan step vocabulary is a closed discriminated union, so a plan
+with an unknown tool cannot be constructed: Pydantic rejects it at
+validation. The orchestrator's unknown-tool dispatch arms are
+therefore unreachable from the public Plan API and are not tested
+here. They are a backstop for a future union member added without a
+dispatch arm, which mypy catches at the dispatch site. The natural
+mutate-failure mode is now a step naming a topic that does not exist,
+which raises TopicNotFoundError inside the mutate pass: a real
+runtime condition, exercised below.
 """
 
 from __future__ import annotations
@@ -17,51 +27,72 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from app.models import Topic
-from app.schemas.agent_plan import Plan, PlanStep
+from app.models import Topic, TopicStatus
+from app.schemas.agent_plan import (
+    GetWeakTopicsStep,
+    MarkForRevisionStep,
+    Plan,
+)
+from app.schemas.tools import GetWeakTopicsInput, MarkForRevisionInput
 from app.services.agent_error_recorder import NoOpAgentErrorRecorder
 from app.services.agent_orchestrator import AgentOrchestratorError, run_plan
-from app.services.agent_tools import stage_topic_upsert
+from app.services.agent_tools import stage_mark_for_revision
+from app.services.topic_crud import get_or_create_topic
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
 
 
-def _topic_exists(db: DbSession, path: str) -> bool:
-    """True if a topic with this path is visible to the session."""
-    return db.query(Topic).filter(Topic.path == path).one_or_none() is not None
+def _seed_topic(db: DbSession, path: str, status: TopicStatus = TopicStatus.LEARNED) -> None:
+    """Create a committed topic at path with a known starting status.
 
-
-# --- The commit-free guarantee ---
-
-
-def test_stage_topic_upsert_flushes_but_does_not_commit(db: DbSession) -> None:
-    """stage_topic_upsert makes the row visible, but a rollback discards it.
-
-    This is the agent-path guarantee: the tool stages without
-    committing so the orchestrator owns the transaction. If it
-    wrongly committed, the rollback below would not discard the row.
+    The strict mutate tool requires the topic to exist, so mutate
+    tests seed targets first. Committing makes them durable state the
+    orchestrator reads, not rows staged in the test's own session.
     """
-    path = "Python > Agent > Staged"
-    returned = stage_topic_upsert(db, path=path)
+    topic = get_or_create_topic(db, path)
+    topic.status = status
+    db.commit()
+
+
+def _status_of(db: DbSession, path: str) -> TopicStatus:
+    """Read one topic's current status, asserting it exists."""
+    return db.query(Topic).filter(Topic.path == path).one().status
+
+
+def _weak_step() -> GetWeakTopicsStep:
+    """A read step with valid get_weak_topics args."""
+    return GetWeakTopicsStep(args=GetWeakTopicsInput(min_attempts=1))
+
+
+def _mark_step(path: str) -> MarkForRevisionStep:
+    """A mutate step marking the given path for revision."""
+    return MarkForRevisionStep(args=MarkForRevisionInput(path=path))
+
+
+# --- The commit-free guarantee (the agent action tool) ---
+
+
+def test_stage_mark_for_revision_flushes_but_does_not_commit(db: DbSession) -> None:
+    """The wrapper stages the status change, a rollback reverts it.
+
+    This is the agent-path guarantee at the tool layer: the tool
+    flushes through the core so later steps see the change, but does
+    not commit, so the orchestrator owns the transaction. If it
+    wrongly committed, the rollback below would not restore the prior
+    status. The core's own behavior is tested in test_topic_crud.py,
+    this pins that the wrapper preserves it.
+    """
+    path = "Python > Async > Coroutines"
+    _seed_topic(db, path, TopicStatus.LEARNED)
+
+    returned = stage_mark_for_revision(db, path=path)
 
     assert returned == path
-    assert _topic_exists(db, path)  # visible after flush
+    assert _status_of(db, path) is TopicStatus.NEEDS_REVISION  # visible after flush
 
     db.rollback()
-    assert not _topic_exists(db, path)  # discarded, so it was never committed
-
-
-def test_stage_topic_upsert_returns_existing_path(db: DbSession) -> None:
-    """Upserting an existing path returns it without creating a duplicate."""
-    path = "Python > Agent > Existing"
-    stage_topic_upsert(db, path=path)
-    db.flush()
-
-    stage_topic_upsert(db, path=path)
-    count = db.query(Topic).filter(Topic.path == path).count()
-
-    assert count == 1
+    assert _status_of(db, path) is TopicStatus.LEARNED  # discarded, so never committed
 
 
 # --- The read/mutate phase split and the approve gate ---
@@ -70,58 +101,52 @@ def test_stage_topic_upsert_returns_existing_path(db: DbSession) -> None:
 async def test_read_pass_returns_evidence_and_mutates_nothing(db: DbSession) -> None:
     """approve=False runs reads, returns evidence, and writes no mutations.
 
-    Even though the plan carries a mutate step, the gate stops before
-    the mutate pass, so the staged topic must be absent afterwards.
+    Even though the plan carries a mutate step against a real topic,
+    the gate stops before the mutate pass, so the topic's status must
+    be unchanged afterwards.
     """
-    mutate_path = "Python > Agent > ShouldNotExist"
-    plan = Plan(
-        steps=[
-            PlanStep(kind="read", tool="get_weak_topics", args={"min_attempts": 1}),
-            PlanStep(kind="mutate", tool="stage_topic_upsert", args={"path": mutate_path}),
-        ]
-    )
+    path = "Python > Async > EventLoop"
+    _seed_topic(db, path, TopicStatus.LEARNED)
+    plan = Plan(steps=[_weak_step(), _mark_step(path)])
 
     evidence = await run_plan(db=db, recorder=NoOpAgentErrorRecorder(), plan=plan, approve=False)
 
     assert len(evidence) == 1
     assert evidence[0].tool == "get_weak_topics"
-    assert not _topic_exists(db, mutate_path)
+    assert _status_of(db, path) is TopicStatus.LEARNED
 
 
 async def test_approved_plan_commits_mutations(db: DbSession) -> None:
-    """approve=True runs the mutate pass and the staged topics persist.
+    """approve=True runs the mutate pass and the status changes persist.
 
-    SQLite-level happy path: this checks the orchestrator's logic
-    (reads then mutates, commits once), not the rollback semantics the
-    smoke owns. A fresh query after the run confirms the commit.
+    SQLite-level happy path: checks the orchestrator's logic (reads
+    then mutates, commits once), not the rollback semantics the smoke
+    owns. Both seeded topics flip to needs_revision and a fresh query
+    confirms the commit.
     """
-    path_a = "Python > Agent > CommittedA"
-    path_b = "Python > Agent > CommittedB"
-    plan = Plan(
-        steps=[
-            PlanStep(kind="mutate", tool="stage_topic_upsert", args={"path": path_a}),
-            PlanStep(kind="mutate", tool="stage_topic_upsert", args={"path": path_b}),
-        ]
-    )
+    path_a = "Python > Async > Tasks"
+    path_b = "Python > Async > Gather"
+    _seed_topic(db, path_a, TopicStatus.LEARNED)
+    _seed_topic(db, path_b, TopicStatus.LEARNED)
+    plan = Plan(steps=[_mark_step(path_a), _mark_step(path_b)])
 
     await run_plan(db=db, recorder=NoOpAgentErrorRecorder(), plan=plan, approve=True)
 
-    assert _topic_exists(db, path_a)
-    assert _topic_exists(db, path_b)
+    assert _status_of(db, path_a) is TopicStatus.NEEDS_REVISION
+    assert _status_of(db, path_b) is TopicStatus.NEEDS_REVISION
 
 
 async def test_read_pass_skips_mutate_steps(db: DbSession) -> None:
-    """The read pass ignores mutate steps; only reads produce evidence.
+    """The read pass ignores mutate steps, only reads produce evidence.
 
-    A plan with one read and one mutate, run with approve=False,
+    A plan with one mutate and one read, run with approve=False,
     yields exactly one evidence entry (the read), never the mutate.
+    Step order is mutate-first to prove the read pass filters by kind
+    rather than by position.
     """
-    plan = Plan(
-        steps=[
-            PlanStep(kind="mutate", tool="stage_topic_upsert", args={"path": "Python > X"}),
-            PlanStep(kind="read", tool="get_weak_topics", args={"min_attempts": 1}),
-        ]
-    )
+    path = "Python > Async > Cancellation"
+    _seed_topic(db, path, TopicStatus.LEARNED)
+    plan = Plan(steps=[_mark_step(path), _weak_step()])
 
     evidence = await run_plan(db=db, recorder=NoOpAgentErrorRecorder(), plan=plan, approve=False)
 
@@ -129,35 +154,29 @@ async def test_read_pass_skips_mutate_steps(db: DbSession) -> None:
     assert evidence[0].tool == "get_weak_topics"
 
 
-# --- Dispatch guards ---
+# --- Mutate-pass failure rolls back atomically ---
 
 
-async def test_unknown_read_tool_raises(db: DbSession) -> None:
-    """An unknown read tool raises AgentOrchestratorError in the read pass."""
-    plan = Plan(steps=[PlanStep(kind="read", tool="no_such_read", args={})])
+async def test_mutate_failure_rolls_back_prior_mutations(db: DbSession) -> None:
+    """A failing mutate step discards a prior successful one in the same plan.
 
-    with pytest.raises(AgentOrchestratorError, match="Unknown read tool"):
-        await run_plan(db=db, recorder=NoOpAgentErrorRecorder(), plan=plan, approve=False)
-
-
-async def test_unknown_mutate_tool_raises_and_rolls_back(db: DbSession) -> None:
-    """An unknown mutate tool raises, and a prior staged mutation is discarded.
-
-    The plan stages one valid topic, then hits an unknown mutate tool.
-    The orchestrator rolls the transaction back before raising, so the
-    first topic must be absent afterwards. This is the same control
-    flow the smoke proves on Postgres, here it confirms the logic and
-    the rollback call on SQLite.
+    The plan marks a real topic, then marks a nonexistent one. The
+    second step raises TopicNotFoundError inside the mutate pass. The
+    orchestrator rolls the whole transaction back before raising, so
+    the first topic's status must revert to its committed value. This
+    is the same control flow the smoke proves on Postgres, here
+    confirming the logic and the rollback call on SQLite.
     """
-    staged_path = "Python > Agent > RolledBack"
+    real_path = "Python > Async > Semaphore"
+    _seed_topic(db, real_path, TopicStatus.LEARNED)
     plan = Plan(
         steps=[
-            PlanStep(kind="mutate", tool="stage_topic_upsert", args={"path": staged_path}),
-            PlanStep(kind="mutate", tool="no_such_mutate", args={}),
+            _mark_step(real_path),
+            _mark_step("Nonexistent > Topic > Path"),
         ]
     )
 
-    with pytest.raises(AgentOrchestratorError, match="Unknown mutate tool"):
+    with pytest.raises(AgentOrchestratorError):
         await run_plan(db=db, recorder=NoOpAgentErrorRecorder(), plan=plan, approve=True)
 
-    assert not _topic_exists(db, staged_path)
+    assert _status_of(db, real_path) is TopicStatus.LEARNED

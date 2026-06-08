@@ -25,10 +25,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.schemas.agent_plan import Evidence, Plan, PlanStep
-from app.schemas.tools import GetWeakTopicsInput
+from app.schemas.agent_plan import (
+    Evidence,
+    GetWeakTopicsStep,
+    MarkForRevisionStep,
+    Plan,
+    PlanStep,
+)
 from app.services.agent_error_recorder import AgentErrorData
-from app.services.agent_tools import stage_topic_upsert
+from app.services.agent_tools import stage_mark_for_revision
 from app.services.tools.handlers import get_weak_topics
 
 if TYPE_CHECKING:
@@ -168,15 +173,20 @@ async def _dispatch_read(db: DbSession, step: PlanStep) -> dict[str, object]:
     with specialist dispatch once there is more than one read tool
     worth routing.
 
+    step.args is already the validated GetWeakTopicsInput: the plan
+    vocabulary types each step's args at the schema boundary, so the
+    orchestrator no longer re-validates a free dict. The isinstance
+    check narrows the union member and keeps mypy honest about the
+    args type.
+
     get_weak_topics is read-only and does not use the embedder, so it
     is awaited directly rather than routed through execute_tool_call
     (which threads an embedder the teaching loop's retrieval tool
     needs). Calling the handler keeps the read on the one code path
     that already produces this output.
     """
-    if step.tool == "get_weak_topics":
-        args = GetWeakTopicsInput.model_validate(step.args)
-        output = await get_weak_topics(db, args)
+    if isinstance(step, GetWeakTopicsStep):
+        output = await get_weak_topics(db, step.args)
         return output.model_dump(mode="json")
     raise AgentOrchestratorError(f"Unknown read tool {step.tool!r}.")
 
@@ -184,11 +194,16 @@ async def _dispatch_read(db: DbSession, step: PlanStep) -> dict[str, object]:
 def _dispatch_mutate(db: DbSession, step: PlanStep) -> None:
     """Dispatch one mutate step to its tool. Currently hardcoded.
 
-    One mutate tool this slice: stage_topic_upsert, which flushes
-    without committing so the orchestrator owns the transaction.
+    One mutate tool this slice: stage_mark_for_revision, which flushes
+    without committing so the orchestrator owns the transaction. It
+    sets an existing topic's status to needs_revision and raises if
+    the topic does not exist.
+
+    step.args is the validated MarkForRevisionInput. The isinstance
+    check narrows the union member, so there is no free-dict access
+    here either.
     """
-    if step.tool == "stage_topic_upsert":
-        path = str(step.args["path"])
-        stage_topic_upsert(db, path=path)
+    if isinstance(step, MarkForRevisionStep):
+        stage_mark_for_revision(db, path=step.args.path)
         return
     raise AgentOrchestratorError(f"Unknown mutate tool {step.tool!r}.")

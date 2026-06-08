@@ -12,10 +12,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
 from app.models import Topic, TopicStatus
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as DbSession
+
+
+class TopicNotFoundError(Exception):
+    """A topic lookup that required an existing row found none.
+
+    Raised by the strict primitives (mark_topic_for_revision) when
+    the path does not resolve to a topic. Distinct from the create-
+    on-miss primitives, which never raise on absence. The agent
+    planner maps this to a groundedness failure. It should not
+    normally reach a user, because the groundedness guard rejects
+    ungrounded targets before the mutate pass runs.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"Topic not found: {path!r}.")
+        self.path = path
 
 
 def get_or_create_topic(db: DbSession, path: str) -> Topic:
@@ -78,4 +96,28 @@ def get_or_create_topic_with_ancestors(db: DbSession, path: str) -> Topic:
     # string yields at least one element. Assert documents that
     # invariant for the type checker.
     assert topic is not None
+    return topic
+
+
+def mark_topic_for_revision(db: DbSession, path: str) -> Topic:
+    """Set an existing topic's status to needs_revision. Returns the topic.
+
+    Strict: the topic must already exist. Marking a nonexistent topic
+    for revision is meaningless, so a missing path raises
+    TopicNotFoundError rather than creating a row. This is the
+    deliberate divergence from get_or_create_topic, which creates on
+    miss for the teaching loop. Here the user is revising a known weak
+    topic, not introducing a new one.
+
+    The caller commits. This function flushes so the status change is
+    visible to later steps in the same transaction. The agent
+    orchestrator owns the commit so an approved multi-step plan
+    applies atomically. stage_mark_for_revision is the commit-free
+    wrapper the orchestrator dispatches to.
+    """
+    topic = db.execute(select(Topic).where(Topic.path == path)).scalar_one_or_none()
+    if topic is None:
+        raise TopicNotFoundError(path)
+    topic.status = TopicStatus.NEEDS_REVISION
+    db.flush()
     return topic
