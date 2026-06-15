@@ -95,3 +95,30 @@ class Evidence(BaseModel):
 
     tool: str
     result: dict[str, object]
+
+
+class ParsedPlan(BaseModel):
+    """A parsed terminal PLAN response from the planner flow.
+
+    Deliberately not a ParsedResponse union member: the plan terminal
+    is only valid in the planner conversation, and keeping it off the
+    union means the teaching and diagnostic flows cannot parse one by
+    accident. raw_text preserves the wire body for error_log.
+    """
+
+    kind: Literal["plan"] = "plan"
+    plan: Plan
+    raw_text: str
+
+
+class PlanProposal(BaseModel):
+    """A proposed plan with the evidence that grounds it.
+
+    What propose returns and what approve receives back. The pair
+    travels together because the backend keeps no state between the
+    two calls: the groundedness guard re-checks the plan against this
+    evidence on approval.
+    """
+
+    plan: Plan
+    evidence: list[Evidence]

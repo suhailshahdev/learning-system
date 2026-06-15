@@ -3,12 +3,18 @@
 The transport layer hands back raw text. This module turns that
 text into one of the structured shapes from app/schemas/parsed_response.py.
 
-Three response kinds are recognized, dispatched on the first
-delimiter line in the text:
+Two entry points, both dispatching on the first delimiter line.
+parse_response covers the teaching and diagnostic flows:
 
   ---TOPIC---                  -> ParsedTurn
   ---SESSION_END_PROPOSAL---   -> ParsedSessionEnd
   ---HANDOVER---               -> ParsedHandover
+  ---TOOL_CALL---              -> ParsedToolCall
+  ---GRADING---                -> ParsedGrading
+  ---PROPOSAL---               -> ParsedProposal
+
+parse_plan_response covers the planner flow, which has a narrower
+grammar: TOOL_CALL or a terminal PLAN.
 
 Anything else is a ParseError. The parser is strict by design:
 every required field must be present, every enum value must be
@@ -25,6 +31,7 @@ import re
 from pydantic import TypeAdapter, ValidationError
 
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
+from app.schemas.agent_plan import MarkForRevisionStep, ParsedPlan, Plan, PlanStep
 from app.schemas.common import Prerequisite
 from app.schemas.parsed_response import (
     CodeBlock,
@@ -96,6 +103,13 @@ MIN_CODE_BLOCK_LINES = 2
 # once. TypeAdapter compilation is the expensive part so the same
 # instance is reused to keep tool-call parsing cheap.
 _TOOL_CALL_ADAPTER: TypeAdapter[ToolCall] = TypeAdapter(ToolCall)
+
+# Adapter for plan steps on the wire. Validates against the
+# mutate-only subset of the plan vocabulary: a wire plan is the
+# planner's terminal output and reads have already happened in the
+# tool-call loop by then. Becomes a discriminated union of mutate
+# steps when the vocabulary grows past one.
+_PLAN_STEP_ADAPTER: TypeAdapter[MarkForRevisionStep] = TypeAdapter(MarkForRevisionStep)
 
 
 class ParseError(Exception):
@@ -389,6 +403,86 @@ def _validate_tool_call(data: dict[str, object], raw: str) -> ToolCall:
     except ValidationError as e:
         raise ParseError(
             "Tool call failed schema validation.",
+            raw_response=raw,
+            cause=e,
+        ) from e
+
+
+def parse_plan_response(text: str) -> ParsedToolCall | ParsedPlan:
+    """Parse a planner-flow response: a tool call or a terminal plan.
+
+    The planner conversation has a narrower grammar than the teaching
+    flow, so it gets its own entry point instead of growing
+    parse_response's union. Mid-conversation responses are TOOL_CALL
+    blocks, the terminal response is a PLAN block. Anything else is a
+    ParseError.
+    """
+    blocks = _split_blocks(text)
+    if not blocks:
+        raise ParseError("No delimiters found in response.", raw_response=text)
+
+    first_marker, _ = blocks[0]
+    if first_marker == "TOOL_CALL":
+        return _parse_tool_call(blocks, raw=text)
+    if first_marker == "PLAN":
+        return _parse_plan(blocks, raw=text)
+
+    raise ParseError(
+        f"Unknown leading delimiter for planner response: {first_marker!r}. "
+        f"Expected TOOL_CALL or PLAN.",
+        raw_response=text,
+    )
+
+
+def _parse_plan(blocks: list[tuple[str, str]], raw: str) -> ParsedPlan:
+    """Build a ParsedPlan from a block list starting with PLAN.
+
+    The block body is a JSON array of mutate-step objects. Always an
+    array, even for one step: one wire form means one thing for the
+    LLM to get right. Each entry validates against the mutate-step
+    vocabulary, so a read step or an unknown tool fails loudly here.
+    Empty arrays raise: the no_data guard runs before the planner
+    chat opens, so an LLM with nothing to propose has misunderstood
+    the format.
+    """
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END":
+        raise ParseError("PLAN must be followed by END.", raw_response=raw)
+
+    body = blocks[0][1]
+    if not body:
+        raise ParseError("PLAN block is empty.", raw_response=raw)
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise ParseError(f"PLAN body is not valid JSON: {e.msg}", raw_response=raw, cause=e) from e
+
+    if not isinstance(data, list):
+        raise ParseError(
+            f"PLAN body must be a JSON array of steps, got {type(data).__name__}.",
+            raw_response=raw,
+        )
+    if not data:
+        raise ParseError("PLAN array must not be empty.", raw_response=raw)
+
+    steps: list[PlanStep] = [
+        _validate_plan_step(entry, raw=raw, index=i) for i, entry in enumerate(data)
+    ]
+    return ParsedPlan(plan=Plan(steps=steps), raw_text=body)
+
+
+def _validate_plan_step(entry: object, raw: str, index: int) -> MarkForRevisionStep:
+    """Validate one entry from a PLAN array against the mutate vocabulary."""
+    if not isinstance(entry, dict):
+        raise ParseError(
+            f"PLAN array entry {index} must be a JSON object, got {type(entry).__name__}.",
+            raw_response=raw,
+        )
+    try:
+        return _PLAN_STEP_ADAPTER.validate_python(entry)
+    except ValidationError as e:
+        raise ParseError(
+            f"PLAN step {index} failed schema validation.",
             raw_response=raw,
             cause=e,
         ) from e
