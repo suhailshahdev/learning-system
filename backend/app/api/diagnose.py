@@ -45,10 +45,10 @@ def _map_diagnostic_error(exc: DiagnosticServiceError) -> HTTPException:
     Bad Gateway. tool_handler_failed is a backend issue (the
     handler raised, not the LLM): 500. no_data means the request
     is well-formed but the system has nothing to diagnose:
-    422 Unprocessable Entity. unexpected is the catch-all: 500.
+    422 Unprocessable Content. unexpected is the catch-all: 500.
     """
     if exc.kind == "no_data":
-        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message)
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message)
     if exc.kind in ("transport_failed", "parse_failed", "wrong_response_kind"):
         return HTTPException(status.HTTP_502_BAD_GATEWAY, detail=exc.message)
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message)
