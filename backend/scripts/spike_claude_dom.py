@@ -20,12 +20,12 @@ for subsequent runs.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
+from app.core.config import get_settings
 from patchright.sync_api import Page, sync_playwright
 from patchright.sync_api import TimeoutError as PlaywrightTimeout
 
-PROFILE_PATH = Path.home() / ".config" / "learning-system" / "chrome-profile"
+PROFILE_PATH = get_settings().chrome_profile_path
 CLAUDE_URL = "https://claude.ai"
 TEST_MESSAGE = (
     "Hello, I'm testing automation. Please respond with just the word "
