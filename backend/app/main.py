@@ -13,7 +13,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, diagnose, documents, health, home, search, sessions, topics
+from app.api import admin, agent, diagnose, documents, health, home, search, sessions, topics
 from app.core.config import Settings, get_settings
 from app.core.db import SessionLocal
 from app.core.telemetry import configure_tracing
@@ -101,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(admin.router, prefix="/api")
+    app.include_router(agent.router, prefix="/api")
     app.include_router(diagnose.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(health.router, prefix="/api")

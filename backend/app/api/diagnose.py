@@ -12,29 +12,24 @@ because it does not create a session resource.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
 from fastapi import APIRouter, HTTPException, status
 
 # FastAPI resolves Annotated[...]-aliased dependencies at route
 # registration via typing.get_type_hints(), which evaluates the
 # annotation strings against the module's runtime namespace. The
 # dep aliases must be real imports, not TYPE_CHECKING-only.
-from app.api.deps import (  # noqa: TC001
+from app.api.deps import (
     DbSession,
     DeepseekTransportDep,
     EmbedderDep,
     PlaywrightTransportDep,
+    pick_transport,
 )
-from app.models import TransportKind
 from app.schemas.diagnose_api import DiagnoseRequest, DiagnoseResponse
 from app.services.diagnostic_service import (
     DiagnosticServiceError,
     propose_topic,
 )
-
-if TYPE_CHECKING:
-    from app.transport.base import LLMTransport
 
 router = APIRouter(prefix="/diagnose", tags=["diagnose"])
 
@@ -59,26 +54,6 @@ def _map_diagnostic_error(exc: DiagnosticServiceError) -> HTTPException:
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message)
 
 
-def _pick_transport(
-    kind: TransportKind,
-    playwright: PlaywrightTransportDep,
-    deepseek: DeepseekTransportDep,
-) -> LLMTransport[Any]:
-    """Dispatch to the matching transport instance.
-
-    This is a per-module helper. Duplicated from sessions.py
-    because route modules keep small helpers local until a
-    third caller emerges. If a future route needs the same
-    logic, this lifts to app/api/deps.py.
-
-    Returns LLMTransport[Any]: Handle TypeVar is invariant so
-    LLMTransport[object] would not accept the concrete handles.
-    """
-    if kind is TransportKind.CLAUDE_PLAYWRIGHT:
-        return playwright
-    return deepseek
-
-
 @router.post("", response_model=DiagnoseResponse)
 async def diagnose(
     body: DiagnoseRequest,
@@ -100,7 +75,7 @@ async def diagnose(
     send_user_answer, which the analytical tools were modeled
     after.
     """
-    transport = _pick_transport(body.transport_kind, playwright, deepseek)
+    transport = pick_transport(body.transport_kind, playwright, deepseek)
     try:
         proposal = await propose_topic(
             db=db,

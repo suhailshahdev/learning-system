@@ -9,21 +9,20 @@ transport_kind column.
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, status
 
 # FastAPI resolves Annotated[...]-aliased dependencies at route
 # registration via typing.get_type_hints(), which evaluates the
 # annotation strings against the module's runtime namespace. The
 # dep aliases must be real imports, not TYPE_CHECKING-only.
-from app.api.deps import (  # noqa: TC001
+from app.api.deps import (
     DbSession,
     DeepseekTransportDep,
     EmbedderDep,
     PlaywrightTransportDep,
+    pick_transport,
 )
-from app.models import Session, TransportKind
+from app.models import Session
 from app.models.enums import SessionState  # noqa: TC001
 from app.schemas.browse_api import BrowseResponse
 from app.schemas.session_api import (
@@ -66,7 +65,7 @@ from app.services.transcript_service import (
     TranscriptServiceError,
     get_transcript,
 )
-from app.transport.base import LLMTransport, TransportError
+from app.transport.base import TransportError
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -93,26 +92,6 @@ def _map_service_error(exc: SessionServiceError) -> HTTPException:
     if isinstance(exc.cause, (TransportError, ParseError)):
         return HTTPException(status.HTTP_502_BAD_GATEWAY, detail=message)
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
-
-
-def _pick_transport(
-    kind: TransportKind,
-    playwright: PlaywrightTransportDep,
-    deepseek: DeepseekTransportDep,
-) -> LLMTransport[Any]:
-    """Dispatch to the matching transport instance.
-
-    Both transports are constructed at app startup and held on
-    app.state. The route reads the kind, this function picks.
-
-    Returns LLMTransport[Any] rather than LLMTransport[object]
-    because Handle is invariant: a PlaywrightClaudeTransport is
-    LLMTransport[PlaywrightChatHandle], not LLMTransport[object].
-    Any matches the convention used by the service signatures.
-    """
-    if kind is TransportKind.CLAUDE_PLAYWRIGHT:
-        return playwright
-    return deepseek
 
 
 @router.get("", response_model=BrowseResponse)
@@ -142,7 +121,7 @@ async def start(
     embedder: EmbedderDep,
 ) -> StartSessionResponse:
     """Open a new session against the chosen transport."""
-    transport = _pick_transport(body.transport_kind, playwright, deepseek)
+    transport = pick_transport(body.transport_kind, playwright, deepseek)
 
     try:
         session, first_turn = await start_session(
@@ -180,7 +159,7 @@ async def send_turn(
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Session {session_id!r} not found.")
 
-    transport = _pick_transport(session.transport_kind, playwright, deepseek)
+    transport = pick_transport(session.transport_kind, playwright, deepseek)
 
     try:
         parsed = await send_user_answer(
@@ -215,7 +194,7 @@ async def continue_session(
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Session {session_id!r} not found.")
 
-    transport = _pick_transport(session.transport_kind, playwright, deepseek)
+    transport = pick_transport(session.transport_kind, playwright, deepseek)
 
     try:
         parsed = await request_next_question(
