@@ -14,7 +14,9 @@ parse_response covers the teaching and diagnostic flows:
   ---PROPOSAL---               -> ParsedProposal
 
 parse_plan_response covers the planner flow, which has a narrower
-grammar: TOOL_CALL or a terminal PLAN.
+grammar: TOOL_CALL or a terminal PLAN. parse_specialist_response
+covers the specialist flows the same way: TOOL_CALL or a terminal
+FINDING whose body is plain prose.
 
 Anything else is a ParseError. The parser is strict by design:
 every required field must be present, every enum value must be
@@ -32,6 +34,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.models.enums import Difficulty, GradingVerdict, LearningMode
 from app.schemas.agent_plan import MarkForRevisionStep, ParsedPlan, Plan, PlanStep
+from app.schemas.agent_specialist import ParsedFinding
 from app.schemas.common import Prerequisite
 from app.schemas.parsed_response import (
     CodeBlock,
@@ -486,6 +489,48 @@ def _validate_plan_step(entry: object, raw: str, index: int) -> MarkForRevisionS
             raw_response=raw,
             cause=e,
         ) from e
+
+
+def parse_specialist_response(text: str) -> ParsedToolCall | ParsedFinding:
+    """Parse a specialist-flow response: a tool call or a terminal finding.
+
+    Specialist conversations share the planner's two-phase grammar:
+    mid-conversation responses are TOOL_CALL blocks, the terminal
+    response is a FINDING block. Anything else is a ParseError.
+    """
+    blocks = _split_blocks(text)
+    if not blocks:
+        raise ParseError("No delimiters found in response.", raw_response=text)
+
+    first_marker, _ = blocks[0]
+    if first_marker == "TOOL_CALL":
+        return _parse_tool_call(blocks, raw=text)
+    if first_marker == "FINDING":
+        return _parse_finding(blocks, raw=text)
+
+    raise ParseError(
+        f"Unknown leading delimiter for specialist response: {first_marker!r}. "
+        f"Expected TOOL_CALL or FINDING.",
+        raw_response=text,
+    )
+
+
+def _parse_finding(blocks: list[tuple[str, str]], raw: str) -> ParsedFinding:
+    """Build a ParsedFinding from a block list starting with FINDING.
+
+    The block body is plain prose, not JSON: a finding is a note, and
+    prose bodies avoid the JSON-escaping failure modes structured
+    bodies invite from real LLMs. Empty bodies raise: a specialist
+    with nothing to report says so in words.
+    """
+    if len(blocks) < MIN_BLOCKS_WITH_END_MARKER or blocks[1][0] != "END":
+        raise ParseError("FINDING must be followed by END.", raw_response=raw)
+
+    body = blocks[0][1]
+    if not body:
+        raise ParseError("FINDING block is empty.", raw_response=raw)
+
+    return ParsedFinding(summary=body, raw_text=body)
 
 
 def _parse_handover_body(body: str, raw: str) -> dict[str, str]:
