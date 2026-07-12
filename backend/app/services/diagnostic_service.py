@@ -50,6 +50,16 @@ _FIRST_MESSAGE = (
 )
 
 
+# The diagnostic flow's native tool surface: the four read-only
+# analytical tools its intro advertises.
+_DIAGNOSTIC_TOOL_NAMES: tuple[str, ...] = (
+    "get_weak_topics",
+    "get_stale_topics",
+    "get_topics_by_domain",
+    "get_recent_sessions",
+)
+
+
 # Failure modes for diagnostic_service. The route layer maps these
 # to HTTP status codes. Substring matching on messages was
 # considered and rejected: messages drift, kinds don't.
@@ -121,7 +131,9 @@ async def propose_topic(
     intro = await build_diagnostic_intro(db)
 
     try:
-        chat, response = await transport.start_new_chat(intro, _FIRST_MESSAGE)
+        chat, response = await transport.start_new_chat(
+            intro, _FIRST_MESSAGE, tool_names=_DIAGNOSTIC_TOOL_NAMES
+        )
     except TransportError as e:
         raise DiagnosticServiceError(
             f"Transport failed opening diagnostic chat: {e.message}",

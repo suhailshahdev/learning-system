@@ -29,6 +29,7 @@ from app.transport.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -124,8 +125,18 @@ class PlaywrightClaudeTransport:
             self._playwright = None
 
     async def start_new_chat(
-        self, system_intro: str, first_message: str
+        self,
+        system_intro: str,
+        first_message: str,
+        tool_names: Sequence[str] | None = None,
     ) -> tuple[PlaywrightChatHandle, TransportResponse]:
+        """Open a claude.ai chat and send the combined intro + first message.
+
+        tool_names is accepted for protocol parity and ignored:
+        claude.ai has no native tool channel, so the intro prose is
+        the chat's entire tool advertisement.
+        """
+        del tool_names
         if self._context is None:
             raise TransportError("Transport not started. Call start() first.")
 
@@ -150,7 +161,15 @@ class PlaywrightClaudeTransport:
 
         return handle, response
 
-    async def resume_chat(self, metadata: ChatResumeMetadata) -> PlaywrightChatHandle:
+    async def resume_chat(
+        self, metadata: ChatResumeMetadata, tool_names: Sequence[str] | None = None
+    ) -> PlaywrightChatHandle:
+        """Reattach to a claude.ai chat by URL.
+
+        tool_names is accepted for protocol parity and ignored, as in
+        start_new_chat.
+        """
+        del tool_names
         if self._context is None:
             raise TransportError("Transport not started. Call start() first.")
 

@@ -119,6 +119,14 @@ async def test_happy_path_returns_proposal(diagnosable_db: DbSession) -> None:
     assert isinstance(result, ParsedProposal)
     assert result.topic_path == "Python > Data Types > Integers"
     assert "4 incorrect attempts" in result.reasoning
+    # The chat advertises the four analytical reads and nothing
+    # else: no mutating tool can be offered natively.
+    assert transport.chats[0].tool_names == (
+        "get_weak_topics",
+        "get_stale_topics",
+        "get_topics_by_domain",
+        "get_recent_sessions",
+    )
 
 
 async def test_one_tool_call_then_proposal(diagnosable_db: DbSession) -> None:

@@ -174,6 +174,9 @@ async def test_propose_tool_call_then_plan_returns_grounded_proposal(db: DbSessi
     # One chat opened, one tool result sent back.
     assert len(transport.chats) == 1
     assert len(transport.chats[0].tool_results_received) == 1
+    # The chat advertises exactly the allowlisted surface, so the
+    # transport can never offer a tool the propose gate would reject.
+    assert transport.chats[0].tool_names == ("get_weak_topics",)
 
 
 async def test_propose_native_tool_calls_then_plan(db: DbSession) -> None:

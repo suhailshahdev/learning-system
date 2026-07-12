@@ -16,6 +16,8 @@ from app.services.embedding_service import EmbeddingError
 from app.transport.base import ToolResult, TransportError, TransportResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.services.embedding_service import Embedder
     from app.transport.base import ChatResumeMetadata, LLMTransport
 
@@ -38,6 +40,10 @@ class FakeChatHandle:
     chat_url: str | None = None
     resumed_from: ChatResumeMetadata | None = None
     tool_results_received: list[list[ToolResult]] = field(default_factory=list)
+    # The tool surface the caller passed when this chat was opened or
+    # resumed, so tests can assert each flow advertises exactly what
+    # it allows. None mirrors the real transports' "nothing" default.
+    tool_names: tuple[str, ...] | None = None
 
 
 class FakeTransport:
@@ -71,7 +77,10 @@ class FakeTransport:
         self.chats: list[FakeChatHandle] = []
 
     async def start_new_chat(
-        self, system_intro: str, first_message: str
+        self,
+        system_intro: str,
+        first_message: str,
+        tool_names: Sequence[str] | None = None,
     ) -> tuple[FakeChatHandle, TransportResponse]:
         # When raise_on_send_at is set, the test wants a specific send()
         # call to fail and start_new_chat is expected to succeed. When
@@ -84,18 +93,21 @@ class FakeTransport:
             raise RuntimeError(
                 "FakeTransport exhausted: start_new_chat() called but no canned responses left."
             )
-        chat = FakeChatHandle()
+        chat = FakeChatHandle(tool_names=tuple(tool_names) if tool_names is not None else None)
         chat.messages_sent.append(system_intro)
         chat.messages_sent.append(first_message)
         chat.message_count += 1
         self.chats.append(chat)
         return chat, self._responses.popleft()
 
-    async def resume_chat(self, metadata: ChatResumeMetadata) -> FakeChatHandle:
+    async def resume_chat(
+        self, metadata: ChatResumeMetadata, tool_names: Sequence[str] | None = None
+    ) -> FakeChatHandle:
         chat = FakeChatHandle(
             message_count=metadata.message_count,
             chat_url=metadata.chat_url,
             resumed_from=metadata,
+            tool_names=tuple(tool_names) if tool_names is not None else None,
         )
         self.chats.append(chat)
         return chat

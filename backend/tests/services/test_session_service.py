@@ -125,6 +125,13 @@ async def test_start_session_persists_session_and_turns(db: DbSession) -> None:
     assert session.state == SessionState.IN_PROGRESS
     assert session.mode_used == LearningMode.FLASHCARD
     assert session.claude_chat_message_count == 1
+    # The teaching chat advertises the four-tool teaching surface.
+    assert transport.chats[0].tool_names == (
+        "get_topics_by_domain",
+        "create_domain",
+        "create_or_update_topic",
+        "get_recent_sessions",
+    )
 
     assert parsed.topic_path == "Python > Data Types > Integers"
     assert parsed.mode == LearningMode.FLASHCARD

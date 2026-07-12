@@ -61,7 +61,10 @@ _FIRST_MESSAGE = (
 # before registry dispatch: the registry's write handlers commit
 # their own writes, and a mutation during propose would be an
 # unapproved write. The phase split is structural, not a prompt rule.
-_ALLOWED_TOOLS = frozenset({"get_weak_topics"})
+# The same tuple is the chat's advertised surface, so the transport
+# can never offer the LLM a tool this gate would reject.
+_PLANNER_TOOL_NAMES: tuple[str, ...] = ("get_weak_topics",)
+_ALLOWED_TOOLS = frozenset(_PLANNER_TOOL_NAMES)
 
 
 # Failure modes for the planner service. The route layer maps these
@@ -131,7 +134,9 @@ async def propose_plan(
     intro = build_planner_intro()
 
     try:
-        chat, response = await transport.start_new_chat(intro, _FIRST_MESSAGE)
+        chat, response = await transport.start_new_chat(
+            intro, _FIRST_MESSAGE, tool_names=_PLANNER_TOOL_NAMES
+        )
     except TransportError as e:
         raise PlannerServiceError(
             f"Transport failed opening planner chat: {e.message}",

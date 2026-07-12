@@ -99,6 +99,18 @@ class SessionServiceError(Exception):
 _session_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+# The teaching loop's native tool surface: the four tools the
+# teaching intro advertises. Passed on every chat open and resume so
+# transports with a native tool channel offer exactly these for the
+# chat's lifetime.
+_TEACHING_TOOL_NAMES: tuple[str, ...] = (
+    "get_topics_by_domain",
+    "create_domain",
+    "create_or_update_topic",
+    "get_recent_sessions",
+)
+
+
 @asynccontextmanager
 async def _session_lock(session_id: str) -> AsyncIterator[None]:
     """Async context manager serializing operations on one session.
@@ -185,7 +197,9 @@ async def start_session(
         first_prompt = build_first_prompt(topic_path)
 
         try:
-            chat, response = await transport.start_new_chat(intro, first_prompt)
+            chat, response = await transport.start_new_chat(
+                intro, first_prompt, tool_names=_TEACHING_TOOL_NAMES
+            )
         except TransportError as e:
             _log_service_error(
                 db,
@@ -408,7 +422,7 @@ async def _continue_within_chat(
     prompt = build_continue_prompt()
 
     try:
-        chat = await transport.resume_chat(metadata)
+        chat = await transport.resume_chat(metadata, tool_names=_TEACHING_TOOL_NAMES)
         response = await transport.send(chat, prompt)
     except TransportError as e:
         _log_service_error(
@@ -502,7 +516,7 @@ async def _send_within_chat(
     prompt = build_turn_prompt(answer)
 
     try:
-        chat = await transport.resume_chat(metadata)
+        chat = await transport.resume_chat(metadata, tool_names=_TEACHING_TOOL_NAMES)
         response = await transport.send(chat, prompt)
     except TransportError as e:
         _log_service_error(
@@ -686,7 +700,7 @@ async def _request_and_parse_handover(
     metadata = _rebuild_chat_metadata(session)
 
     try:
-        old_chat = await transport.resume_chat(metadata)
+        old_chat = await transport.resume_chat(metadata, tool_names=_TEACHING_TOOL_NAMES)
         handover_response = await transport.send(old_chat, build_handover_request())
         await transport.close(old_chat)
     except TransportError as e:
@@ -780,7 +794,9 @@ async def _open_new_chat_with_handover(
     first_message = build_continue_prompt()
 
     try:
-        new_chat, new_response = await transport.start_new_chat(combined_intro, first_message)
+        new_chat, new_response = await transport.start_new_chat(
+            combined_intro, first_message, tool_names=_TEACHING_TOOL_NAMES
+        )
     except TransportError as e:
         _log_service_error(
             db,

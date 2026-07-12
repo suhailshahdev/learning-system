@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.schemas.tools import ToolCall
 
 Handle = TypeVar("Handle")
@@ -123,7 +125,10 @@ class LLMTransport(Protocol[Handle]):
     """
 
     async def start_new_chat(
-        self, system_intro: str, first_message: str
+        self,
+        system_intro: str,
+        first_message: str,
+        tool_names: Sequence[str] | None = None,
     ) -> tuple[Handle, TransportResponse]:
         """Open a fresh chat with the intro and send the first user message.
 
@@ -133,13 +138,28 @@ class LLMTransport(Protocol[Handle]):
         avoid producing a separate onboarding turn before the real
         teaching turn lands.
 
+        tool_names is the chat's native tool surface: exactly the
+        tools the transport advertises through its API for this
+        chat's lifetime. None advertises nothing. Callers pass the
+        set their flow allows, so the API-level offer can never
+        contradict the flow's gate. Transports without a native tool
+        channel (claude.ai) ignore it; their intro prose is the only
+        advertisement.
+
         The response may carry tool_calls. The session-service loop
         handles them and calls send_tool_results.
         """
         ...
 
-    async def resume_chat(self, metadata: ChatResumeMetadata) -> Handle:
-        """Reattach to an in-progress chat from persisted metadata."""
+    async def resume_chat(
+        self, metadata: ChatResumeMetadata, tool_names: Sequence[str] | None = None
+    ) -> Handle:
+        """Reattach to an in-progress chat from persisted metadata.
+
+        tool_names re-establishes the chat's native tool surface,
+        which is not part of the persisted metadata. Same semantics
+        as start_new_chat.
+        """
         ...
 
     async def send(self, chat: Handle, message: str) -> TransportResponse:

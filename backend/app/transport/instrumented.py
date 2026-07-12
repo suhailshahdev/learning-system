@@ -40,7 +40,7 @@ from app.services.llm_call_recorder import LLMCallData
 from app.transport.base import TransportError, TransportResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from app.services.llm_call_recorder import LLMCallRecorder
     from app.transport.base import (
@@ -82,13 +82,18 @@ class InstrumentedTransport[Handle]:
         self._gen_ai_system = _gen_ai_system_for(transport_kind)
 
     async def start_new_chat(
-        self, system_intro: str, first_message: str
+        self,
+        system_intro: str,
+        first_message: str,
+        tool_names: Sequence[str] | None = None,
     ) -> tuple[Handle, TransportResponse]:
         prompt_chars = len(system_intro) + len(first_message)
         start = time.perf_counter()
         with self._span("start_new_chat") as span:
             try:
-                handle, response = await self._inner.start_new_chat(system_intro, first_message)
+                handle, response = await self._inner.start_new_chat(
+                    system_intro, first_message, tool_names
+                )
             except TransportError as e:
                 self._fail_span(span, e)
                 self._record("start_new_chat", start, prompt_chars, None, e)
@@ -96,11 +101,13 @@ class InstrumentedTransport[Handle]:
             self._record("start_new_chat", start, prompt_chars, response, None)
             return handle, response
 
-    async def resume_chat(self, metadata: ChatResumeMetadata) -> Handle:
+    async def resume_chat(
+        self, metadata: ChatResumeMetadata, tool_names: Sequence[str] | None = None
+    ) -> Handle:
         start = time.perf_counter()
         with self._span("resume_chat") as span:
             try:
-                handle = await self._inner.resume_chat(metadata)
+                handle = await self._inner.resume_chat(metadata, tool_names)
             except TransportError as e:
                 self._fail_span(span, e)
                 self._record("resume_chat", start, 0, None, e)

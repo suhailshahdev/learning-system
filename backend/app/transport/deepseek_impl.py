@@ -23,7 +23,9 @@ from app.schemas.tools import (
     CreateDomainInput,
     CreateOrUpdateTopicInput,
     GetRecentSessionsInput,
+    GetStaleTopicsInput,
     GetTopicsByDomainInput,
+    GetWeakTopicsInput,
     ToolCall,
 )
 from app.transport.base import (
@@ -34,6 +36,7 @@ from app.transport.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from types import TracebackType
 
     from app.transport.base import LLMTransport
@@ -52,57 +55,66 @@ TOTAL_TIMEOUT_S = 120.0
 _TOOL_CALL_ADAPTER: TypeAdapter[ToolCall] = TypeAdapter(ToolCall)
 
 
-def _build_tools_param() -> list[dict[str, Any]]:
-    """Generate the API's `tools` parameter from the schema models.
+# Every tool this transport can advertise natively, keyed by name.
+# Which subset a given chat advertises is the caller's decision via
+# start_new_chat/resume_chat tool_names; the catalog only supplies
+# the definitions. The two pre-loaded tools (list_domains,
+# get_user_knowledge_summary) are absent because their data ships in
+# the intro already.
+_TOOL_CATALOG: dict[str, tuple[str, type[BaseModel]]] = {
+    "get_topics_by_domain": (
+        "Returns existing topics within one domain. "
+        "Call before introducing a topic to reuse paths.",
+        GetTopicsByDomainInput,
+    ),
+    "create_domain": (
+        "Creates a new domain. Idempotent on name. Call only when no existing domain fits.",
+        CreateDomainInput,
+    ),
+    "create_or_update_topic": (
+        "Upserts a topic by path. Records difficulty, prerequisites, and parent_path.",
+        CreateOrUpdateTopicInput,
+    ),
+    "get_recent_sessions": (
+        "Returns the last N sessions with topic paths and modes.",
+        GetRecentSessionsInput,
+    ),
+    "get_weak_topics": (
+        "Returns topics with incorrect or partial grading verdicts, "
+        "ordered worst-first by weakness score.",
+        GetWeakTopicsInput,
+    ),
+    "get_stale_topics": (
+        "Returns topics whose last review is older than the threshold, oldest-first.",
+        GetStaleTopicsInput,
+    ),
+}
+
+
+def _tools_param_for(tool_names: Sequence[str]) -> list[dict[str, Any]]:
+    """Build the API's `tools` parameter for the named tools.
 
     OpenAI-compatible APIs expect each tool as:
         {"type": "function",
          "function": {"name": ..., "description": ..., "parameters": <JSON schema>}}
 
-    Schemas come from app.schemas.tools' input models. The four
-    advertised tools match what the intro tells the LLM. The two
-    pre-loaded tools (list_domains, get_user_knowledge_summary)
-    are not advertised because their data is in the intro already.
+    An unknown name is a caller bug: fail loudly at chat open rather
+    than advertise a partial surface.
     """
-    advertised: list[tuple[str, str, type[BaseModel]]] = [
-        (
-            "get_topics_by_domain",
-            "Returns existing topics within one domain. "
-            "Call before introducing a topic to reuse paths.",
-            GetTopicsByDomainInput,
-        ),
-        (
-            "create_domain",
-            "Creates a new domain. Idempotent on name. Call only when no existing domain fits.",
-            CreateDomainInput,
-        ),
-        (
-            "create_or_update_topic",
-            "Upserts a topic by path. Records difficulty, prerequisites, and parent_path.",
-            CreateOrUpdateTopicInput,
-        ),
-        (
-            "get_recent_sessions",
-            "Returns the last N sessions with topic paths and modes.",
-            GetRecentSessionsInput,
-        ),
-    ]
-
+    unknown = [name for name in tool_names if name not in _TOOL_CATALOG]
+    if unknown:
+        raise TransportError(f"Unknown tool names for DeepSeek advertisement: {unknown!r}")
     return [
         {
             "type": "function",
             "function": {
                 "name": name,
-                "description": description,
-                "parameters": input_model.model_json_schema(),
+                "description": _TOOL_CATALOG[name][0],
+                "parameters": _TOOL_CATALOG[name][1].model_json_schema(),
             },
         }
-        for name, description, input_model in advertised
+        for name in tool_names
     ]
-
-
-# Built once and reused, tools list doesn't change per call.
-_TOOLS_PARAM = _build_tools_param()
 
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -154,6 +166,10 @@ class DeepseekChatHandle:
     model: str
     history: list[Message] = field(default_factory=list)
     message_count: int = 0
+    # The chat's native tool surface, built once at open/resume from
+    # the caller's tool_names. None advertises nothing. Rides every
+    # API call for the chat's lifetime so the offer stays constant.
+    tools: list[dict[str, Any]] | None = None
 
 
 class DeepseekTransport:
@@ -204,17 +220,24 @@ class DeepseekTransport:
             self._client = None
 
     async def start_new_chat(
-        self, system_intro: str, first_message: str
+        self,
+        system_intro: str,
+        first_message: str,
+        tool_names: Sequence[str] | None = None,
     ) -> tuple[DeepseekChatHandle, TransportResponse]:
         if self._client is None:
             raise TransportError("Transport not started. Call start() first.")
 
         handle = DeepseekChatHandle(model=self._default_model)
+        if tool_names is not None:
+            handle.tools = _tools_param_for(tool_names)
         handle.history.append(Message(role="system", content=system_intro))
         response = await self._send_and_capture(handle, first_message)
         return handle, response
 
-    async def resume_chat(self, metadata: ChatResumeMetadata) -> DeepseekChatHandle:
+    async def resume_chat(
+        self, metadata: ChatResumeMetadata, tool_names: Sequence[str] | None = None
+    ) -> DeepseekChatHandle:
         if self._client is None:
             raise TransportError("Transport not started. Call start() first.")
 
@@ -222,6 +245,8 @@ class DeepseekTransport:
             raise TransportError("Cannot resume DeepSeek chat with empty prior_messages.")
 
         handle = DeepseekChatHandle(model=self._default_model)
+        if tool_names is not None:
+            handle.tools = _tools_param_for(tool_names)
         handle.history = [Message(role=m.role, content=m.content) for m in metadata.prior_messages]
         handle.message_count = metadata.message_count
         return handle
@@ -296,13 +321,16 @@ class DeepseekTransport:
         # rest of the architecture working. Trigger to revisit: LLM tool-
         # selection quality drops measurably and chain-of-thought is the
         # likely fix.
-        payload = {
+        payload: dict[str, Any] = {
             "model": chat.model,
             "messages": [m.to_wire() for m in next_history],
-            "tools": _TOOLS_PARAM,
             "stream": False,
             "thinking": {"type": "disabled"},
         }
+        # Omit the key entirely when the chat advertises nothing; an
+        # empty tools list is not the same thing to the API.
+        if chat.tools is not None:
+            payload["tools"] = chat.tools
 
         try:
             response = await self._client.post(CHAT_COMPLETIONS_PATH, json=payload)
