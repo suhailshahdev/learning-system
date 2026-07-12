@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Self
 
 from patchright.async_api import (
     BrowserContext,
+    Locator,
     Page,
     Playwright,
     async_playwright,
@@ -41,6 +42,12 @@ CLAUDE_NEW_CHAT_URL = "https://claude.ai/new"
 
 INPUT_SELECTOR = 'div[contenteditable="true"]'
 ASSISTANT_MESSAGE_SELECTOR = "div.font-claude-response"
+# The message body inside the response container. The container also
+# carries UI chrome: a collapsed thinking-summary chip (a button plus
+# an sr-only duplicate of its label) renders above the body, and
+# text_content() on the whole container glues the chip label onto the
+# body's first line, breaking the parser's line-anchored delimiters.
+RESPONSE_CONTENT_SELECTOR = "div.standard-markdown"
 STREAMING_DONE_ATTR = "data-is-streaming"
 STREAMING_DONE_VALUE = "false"
 
@@ -322,7 +329,7 @@ class PlaywrightClaudeTransport:
                 timeout=RESPONSE_DONE_TIMEOUT_MS,
             )
 
-            text = await new_message.text_content() or ""
+            text = await self._response_text(new_message)
         except PlaywrightTimeout as e:
             raise TransportError("Timed out waiting for claude.ai response.", cause=e) from e
         except Exception as e:
@@ -331,6 +338,23 @@ class PlaywrightClaudeTransport:
         chat.message_count += 1
         chat.chat_url = page.url
         return TransportResponse(text=text)
+
+    async def _response_text(self, message: Locator) -> str:
+        """Extract the message body, excluding claude.ai UI chrome.
+
+        The body lives in standard-markdown nodes inside the response
+        container; scraping those keeps the thinking-summary chip and
+        any other chrome out of the text the parser sees. Multiple
+        body nodes join in DOM order. Falls back to the whole
+        container when no body node exists, which restores the old
+        behavior rather than returning an empty response.
+        """
+        content = message.locator(RESPONSE_CONTENT_SELECTOR)
+        count = await content.count()
+        if count == 0:
+            return await message.text_content() or ""
+        parts = [await content.nth(i).text_content() or "" for i in range(count)]
+        return "\n".join(parts)
 
 
 _: type[LLMTransport[PlaywrightChatHandle]] = PlaywrightClaudeTransport
