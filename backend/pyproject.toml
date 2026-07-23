@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Backend service for the learning system"
 requires-python = ">=3.13"
 authors = [
-    { name = "ken", email = "84672139+kendoki@users.noreply.github.com" }
+    { name = "suhail shah", email = "84672139+suhailshahdev@users.noreply.github.com" }
 ]
 
 dependencies = [
