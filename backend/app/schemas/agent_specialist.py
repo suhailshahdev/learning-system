@@ -17,6 +17,15 @@ from typing import Literal
 from app.schemas.agent_plan import Evidence  # noqa: TC002 (Pydantic runtime field resolution)
 from pydantic import BaseModel, Field
 
+type SpecialistErrorKind = Literal[
+    "transport_failed",
+    "parse_failed",
+    "tool_handler_failed",
+    "disallowed_tool",
+    "ungrounded",
+    "unexpected",
+]
+
 
 class SpecialistFinding(BaseModel):
     """One specialist's grounding note for a single plan target.
@@ -56,5 +65,22 @@ class SpecialistResult(BaseModel):
     together so a proposal can show both the note and its sources.
     """
 
+    status: Literal["completed"] = "completed"
     finding: SpecialistFinding
     evidence: list[Evidence]
+
+
+class SpecialistFailure(BaseModel):
+    """A failed specialist invocation retained as proposal evidence.
+
+    The planner degrades per target instead of discarding a valid
+    proposal. error_kind preserves the typed failure category while
+    message is safe to expose to the client and does not copy the
+    underlying exception text.
+    """
+
+    status: Literal["failed"] = "failed"
+    specialist: Literal["retrieval_specialist"] = "retrieval_specialist"
+    topic_path: str
+    error_kind: SpecialistErrorKind
+    message: str = Field(min_length=1)

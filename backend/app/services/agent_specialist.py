@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import contextlib
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from app.prompts.retrieval_specialist_intro import build_retrieval_specialist_intro
 from app.schemas.agent_plan import Evidence
-from app.schemas.agent_specialist import SpecialistFinding, SpecialistResult
+from app.schemas.agent_specialist import (
+    SpecialistErrorKind,
+    SpecialistFinding,
+    SpecialistResult,
+)
 from app.schemas.parsed_response import ParsedToolCall
 from app.services.parser import ParseError, parse_specialist_response
 from app.services.tools.handlers import ToolHandlerError
@@ -46,20 +50,6 @@ if TYPE_CHECKING:
 # the transport can never offer a tool this gate would reject.
 _SPECIALIST_TOOL_NAMES: tuple[str, ...] = ("search_corpus",)
 _ALLOWED_TOOLS = frozenset(_SPECIALIST_TOOL_NAMES)
-
-
-# Failure modes for the specialist service. no_data is absent: the
-# caller only invokes the specialist for targets that already passed
-# the planner's guards, so there is no empty state to detect here.
-# ungrounded means the LLM emitted a finding without searching first.
-type SpecialistErrorKind = Literal[
-    "transport_failed",
-    "parse_failed",
-    "tool_handler_failed",
-    "disallowed_tool",
-    "ungrounded",
-    "unexpected",
-]
 
 
 class SpecialistServiceError(Exception):

@@ -31,6 +31,11 @@ from app.models import (
 )
 from app.models.enums import GradingVerdict, LearningMode, SessionState
 from app.schemas.agent_plan import Evidence, MarkForRevisionStep, Plan, PlanProposal
+from app.schemas.agent_specialist import (
+    SpecialistFailure,
+    SpecialistFinding,
+    SpecialistResult,
+)
 from app.schemas.tools import (
     CreateDomainCall,
     CreateDomainInput,
@@ -39,6 +44,7 @@ from app.schemas.tools import (
     GetWeakTopicsOutput,
     WeakTopicInfo,
 )
+from app.services import agent_planner
 from app.services.agent_error_recorder import NoOpAgentErrorRecorder
 from app.services.agent_orchestrator import AgentOrchestratorError
 from app.services.agent_planner import (
@@ -46,6 +52,7 @@ from app.services.agent_planner import (
     approve_plan,
     propose_plan,
 )
+from app.services.agent_specialist import SpecialistServiceError
 from app.transport.base import TransportError, TransportResponse
 
 from tests.services.fakes import FakeEmbedder, FakeTransport
@@ -73,14 +80,16 @@ def _seed_weak_topic(db: DbSession, path: str = WEAK_PATH) -> None:
     the same topic the evidence contains. Committing makes this
     durable state both reads see.
     """
-    domain = Domain(name=path.split(" > ", 1)[0], kind=DomainKind.LANGUAGE, description=None)
+    domain_name = path.split(" > ", 1)[0]
+    domain = db.query(Domain).filter(Domain.name == domain_name).one_or_none()
+    if domain is None:
+        db.add(Domain(name=domain_name, kind=DomainKind.LANGUAGE, description=None))
     topic = Topic(
         path=path,
-        domain=path.split(" > ", 1)[0],
+        domain=domain_name,
         name=path.rsplit(" > ", 1)[-1],
         status=TopicStatus.LEARNED,
     )
-    db.add(domain)
     db.add(topic)
     db.flush()
 
@@ -113,11 +122,12 @@ def _status_of(db: DbSession, path: str) -> TopicStatus:
     return db.query(Topic).filter(Topic.path == path).one().status
 
 
-def _plan_response(path: str) -> str:
-    """A terminal PLAN marking one path for revision."""
-    return (
-        f'---PLAN---\n[{{"tool": "mark_for_revision", "args": {{"path": "{path}"}}}}]\n---END---\n'
+def _plan_response(*paths: str) -> str:
+    """A terminal PLAN marking the supplied paths for revision."""
+    steps = ", ".join(
+        f'{{"tool": "mark_for_revision", "args": {{"path": "{path}"}}}}' for path in paths
     )
+    return f"---PLAN---\n[{steps}]\n---END---\n"
 
 
 def _tool_call_response() -> str:
@@ -141,10 +151,44 @@ def _evidence_for(path: str) -> list[Evidence]:
     return [Evidence(tool="get_weak_topics", result=output.model_dump(mode="json"))]
 
 
+def _specialist_result(path: str) -> SpecialistResult:
+    """One completed specialist outcome with retained search evidence."""
+    return SpecialistResult(
+        finding=SpecialistFinding(
+            topic_path=path,
+            summary="The corpus contains material related to this topic.",
+        ),
+        evidence=[Evidence(tool="search_corpus", result={"hits": []})],
+    )
+
+
+@pytest.fixture
+def specialist_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, str]]:
+    """Stub specialist execution and retain its curated hand-offs."""
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_gather_grounding(
+        *,
+        topic_path: str,
+        weak_topic: WeakTopicInfo,
+        **kwargs: object,
+    ) -> SpecialistResult:
+        calls.append((topic_path, weak_topic.topic_path))
+        return _specialist_result(topic_path)
+
+    monkeypatch.setattr(agent_planner, "gather_grounding", _fake_gather_grounding)
+    return calls
+
+
 # ---------- propose: happy path ----------
 
 
-async def test_propose_tool_call_then_plan_returns_grounded_proposal(db: DbSession) -> None:
+async def test_propose_tool_call_then_plan_returns_grounded_proposal(
+    db: DbSession,
+    specialist_calls: list[tuple[str, str]],
+) -> None:
     """LLM calls get_weak_topics, then emits a plan targeting that path.
 
     The full propose flow: guard passes, chat opens, the tool call
@@ -166,9 +210,16 @@ async def test_propose_tool_call_then_plan_returns_grounded_proposal(db: DbSessi
     step = proposal.plan.steps[0]
     assert isinstance(step, MarkForRevisionStep)
     assert step.args.path == WEAK_PATH
-    # The tool result was retained as evidence.
-    assert len(proposal.evidence) == 1
+    # The planner read and specialist outcome were both retained.
+    assert len(proposal.evidence) == 2
     assert proposal.evidence[0].tool == "get_weak_topics"
+    specialist = proposal.evidence[1]
+    assert specialist.tool == "retrieval_specialist"
+    completed = SpecialistResult.model_validate(specialist.result)
+    assert completed.status == "completed"
+    assert completed.finding.topic_path == WEAK_PATH
+    assert completed.evidence[0].tool == "search_corpus"
+    assert specialist_calls == [(WEAK_PATH, WEAK_PATH)]
     # Propose mutates nothing: the topic keeps its committed status.
     assert _status_of(db, WEAK_PATH) is TopicStatus.LEARNED
     # One chat opened, one tool result sent back.
@@ -179,7 +230,10 @@ async def test_propose_tool_call_then_plan_returns_grounded_proposal(db: DbSessi
     assert transport.chats[0].tool_names == ("get_weak_topics",)
 
 
-async def test_propose_native_tool_calls_then_plan(db: DbSession) -> None:
+async def test_propose_native_tool_calls_then_plan(
+    db: DbSession,
+    specialist_calls: list[tuple[str, str]],
+) -> None:
     """DeepSeek-style native tool_calls populate evidence the same way."""
     _seed_weak_topic(db)
     call = GetWeakTopicsCall(args=GetWeakTopicsInput(), id="call_1")
@@ -194,10 +248,65 @@ async def test_propose_native_tool_calls_then_plan(db: DbSession) -> None:
         transport_kind=TransportKind.DEEPSEEK,
     )
 
-    assert len(proposal.evidence) == 1
+    assert len(proposal.evidence) == 2
     step = proposal.plan.steps[0]
     assert isinstance(step, MarkForRevisionStep)
     assert step.args.path == WEAK_PATH
+    assert specialist_calls == [(WEAK_PATH, WEAK_PATH)]
+
+
+async def test_propose_degrades_failed_target_and_continues_fan_out(
+    db: DbSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A specialist failure becomes evidence and later targets still run.
+
+    The first target raises a parse failure carrying text that must
+    not reach the client. The second target completes. If fan-out
+    aborts on the first error, the second call and its evidence will
+    be absent, falsifying the per-target degradation policy.
+    """
+    _seed_weak_topic(db, WEAK_PATH)
+    _seed_weak_topic(db, OTHER_PATH)
+    transport = FakeTransport([_tool_call_response(), _plan_response(WEAK_PATH, OTHER_PATH)])
+    calls: list[str] = []
+
+    async def _fake_gather_grounding(
+        *,
+        topic_path: str,
+        **kwargs: object,
+    ) -> SpecialistResult:
+        calls.append(topic_path)
+        if topic_path == WEAK_PATH:
+            raise SpecialistServiceError(
+                "parser exposed private upstream text",
+                kind="parse_failed",
+            )
+        return _specialist_result(topic_path)
+
+    monkeypatch.setattr(agent_planner, "gather_grounding", _fake_gather_grounding)
+
+    proposal = await propose_plan(
+        db=db,
+        transport=transport,
+        embedder=FakeEmbedder(),
+        transport_kind=TransportKind.DEEPSEEK,
+    )
+
+    assert calls == [WEAK_PATH, OTHER_PATH]
+    assert len(proposal.evidence) == 3
+    failed = proposal.evidence[1]
+    assert failed.tool == "retrieval_specialist"
+    failure = SpecialistFailure.model_validate(failed.result)
+    assert failure.status == "failed"
+    assert failure.specialist == "retrieval_specialist"
+    assert failure.topic_path == WEAK_PATH
+    assert failure.error_kind == "parse_failed"
+    assert failure.message == "Retrieval enrichment was unavailable for this topic."
+    assert "private upstream text" not in str(proposal.model_dump(mode="json"))
+    completed = SpecialistResult.model_validate(proposal.evidence[2].result)
+    assert completed.status == "completed"
+    assert completed.finding.topic_path == OTHER_PATH
 
 
 # ---------- propose: no_data guard ----------

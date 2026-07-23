@@ -30,6 +30,7 @@ from app.schemas.agent_plan import (
     Plan,
     PlanProposal,
 )
+from app.schemas.agent_specialist import SpecialistFinding, SpecialistResult
 from app.schemas.tools import MarkForRevisionInput
 from app.services.agent_error_recorder import NoOpAgentErrorRecorder
 from app.services.agent_orchestrator import AgentOrchestratorError
@@ -43,7 +44,20 @@ TARGET_PATH = "Python > Data Types > Integers"
 def _proposal() -> PlanProposal:
     """One grounded single-step proposal, the shape propose returns."""
     plan = Plan(steps=[MarkForRevisionStep(args=MarkForRevisionInput(path=TARGET_PATH))])
-    evidence = [Evidence(tool="get_weak_topics", result={"topics": [{"path": TARGET_PATH}]})]
+    specialist = SpecialistResult(
+        finding=SpecialistFinding(
+            topic_path=TARGET_PATH,
+            summary="The corpus contains relevant integer examples.",
+        ),
+        evidence=[Evidence(tool="search_corpus", result={"hits": []})],
+    )
+    evidence = [
+        Evidence(tool="get_weak_topics", result={"topics": [{"topic_path": TARGET_PATH}]}),
+        Evidence(
+            tool="retrieval_specialist",
+            result=specialist.model_dump(mode="json"),
+        ),
+    ]
     return PlanProposal(plan=plan, evidence=evidence)
 
 
@@ -82,6 +96,9 @@ def test_propose_returns_plan_and_evidence(
     assert body["plan"]["steps"][0]["tool"] == "mark_for_revision"
     assert body["plan"]["steps"][0]["args"]["path"] == TARGET_PATH
     assert body["evidence"][0]["tool"] == "get_weak_topics"
+    assert body["evidence"][1]["tool"] == "retrieval_specialist"
+    assert body["evidence"][1]["result"]["status"] == "completed"
+    assert body["evidence"][1]["result"]["finding"]["topic_path"] == TARGET_PATH
 
 
 @pytest.mark.parametrize(

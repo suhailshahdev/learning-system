@@ -28,9 +28,11 @@ from pydantic import ValidationError
 
 from app.prompts.planner_intro import build_planner_intro
 from app.schemas.agent_plan import Evidence, MarkForRevisionStep, PlanProposal
+from app.schemas.agent_specialist import SpecialistFailure
 from app.schemas.parsed_response import ParsedToolCall
 from app.schemas.tools import GetWeakTopicsInput, GetWeakTopicsOutput
 from app.services.agent_orchestrator import run_plan
+from app.services.agent_specialist import SpecialistServiceError, gather_grounding
 from app.services.parser import ParseError, parse_plan_response
 from app.services.tools.handlers import ToolHandlerError, get_weak_topics
 from app.services.tools.registry import execute_tool_call
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
 
     from app.models import TransportKind
     from app.schemas.agent_plan import ParsedPlan, Plan
+    from app.schemas.tools import WeakTopicInfo
     from app.services.agent_error_recorder import AgentErrorRecorder
     from app.services.embedding_service import Embedder
     from app.transport.base import LLMTransport
@@ -65,6 +68,8 @@ _FIRST_MESSAGE = (
 # can never offer the LLM a tool this gate would reject.
 _PLANNER_TOOL_NAMES: tuple[str, ...] = ("get_weak_topics",)
 _ALLOWED_TOOLS = frozenset(_PLANNER_TOOL_NAMES)
+
+_SPECIALIST_UNAVAILABLE_MESSAGE = "Retrieval enrichment was unavailable for this topic."
 
 
 # Failure modes for the planner service. The route layer maps these
@@ -167,8 +172,18 @@ async def propose_plan(
 
     await _close_quietly(transport, chat)
 
-    _assert_plan_grounded(parsed.plan, evidence)
-    return PlanProposal(plan=parsed.plan, evidence=evidence)
+    weak_topics = _assert_plan_grounded(parsed.plan, evidence)
+    specialist_evidence = await _gather_specialist_evidence(
+        db=db,
+        transport=transport,
+        embedder=embedder,
+        plan=parsed.plan,
+        weak_topics=weak_topics,
+    )
+    return PlanProposal(
+        plan=parsed.plan,
+        evidence=[*evidence, *specialist_evidence],
+    )
 
 
 async def approve_plan(
@@ -306,8 +321,11 @@ async def _check_plannable_state(db: DbSession) -> None:
         )
 
 
-def _assert_plan_grounded(plan: Plan, evidence: list[Evidence]) -> None:
-    """Raise unless every plan step is a mutate targeting an evidenced path.
+def _assert_plan_grounded(
+    plan: Plan,
+    evidence: list[Evidence],
+) -> dict[str, WeakTopicInfo]:
+    """Return evidenced weak topics after validating every plan target.
 
     Three checks: the plan has at least one step, every step is a
     mutate step, and every target path appears in a get_weak_topics
@@ -319,7 +337,7 @@ def _assert_plan_grounded(plan: Plan, evidence: list[Evidence]) -> None:
     database state stays with the strict mutate core inside the
     transaction.
     """
-    grounded = _evidenced_paths(evidence)
+    grounded = _evidenced_weak_topics(evidence)
     if not plan.steps:
         raise PlannerServiceError("Plan has no steps.", kind="ungrounded")
     for index, step in enumerate(plan.steps):
@@ -335,16 +353,17 @@ def _assert_plan_grounded(plan: Plan, evidence: list[Evidence]) -> None:
                 f"not in the gathered evidence.",
                 kind="ungrounded",
             )
+    return grounded
 
 
-def _evidenced_paths(evidence: list[Evidence]) -> set[str]:
-    """Collect topic paths from get_weak_topics evidence entries.
+def _evidenced_weak_topics(evidence: list[Evidence]) -> dict[str, WeakTopicInfo]:
+    """Collect weak-topic rows from get_weak_topics evidence entries.
 
     Entries validate back through GetWeakTopicsOutput. On approve the
     evidence arrives from the client, so an entry that does not
     validate grounds nothing rather than being trusted.
     """
-    paths: set[str] = set()
+    topics: dict[str, WeakTopicInfo] = {}
     for entry in evidence:
         if entry.tool != "get_weak_topics":
             continue
@@ -352,5 +371,51 @@ def _evidenced_paths(evidence: list[Evidence]) -> set[str]:
             output = GetWeakTopicsOutput.model_validate(entry.result)
         except ValidationError:
             continue
-        paths.update(t.topic_path for t in output.topics)
-    return paths
+        topics.update((topic.topic_path, topic) for topic in output.topics)
+    return topics
+
+
+async def _gather_specialist_evidence(
+    *,
+    db: DbSession,
+    transport: LLMTransport[Any],
+    embedder: Embedder,
+    plan: Plan,
+    weak_topics: dict[str, WeakTopicInfo],
+) -> list[Evidence]:
+    """Enrich each grounded plan target with one specialist outcome.
+
+    Specialist failures degrade per target. The valid planner result
+    stays available, the failure is explicit in proposal evidence,
+    and later targets still run. The original get_weak_topics rows
+    remain the only evidence the approval guard trusts.
+    """
+    evidence: list[Evidence] = []
+    for step in plan.steps:
+        if not isinstance(step, MarkForRevisionStep):
+            continue
+        topic_path = step.args.path
+        try:
+            result = await gather_grounding(
+                db=db,
+                transport=transport,
+                embedder=embedder,
+                topic_path=topic_path,
+                weak_topic=weak_topics[topic_path],
+            )
+        except SpecialistServiceError as exc:
+            failure = SpecialistFailure(
+                topic_path=topic_path,
+                error_kind=exc.kind,
+                message=_SPECIALIST_UNAVAILABLE_MESSAGE,
+            )
+            outcome_payload = failure.model_dump(mode="json")
+        else:
+            outcome_payload = result.model_dump(mode="json")
+        evidence.append(
+            Evidence(
+                tool="retrieval_specialist",
+                result=outcome_payload,
+            )
+        )
+    return evidence
