@@ -3,7 +3,9 @@
 Exercises propose_plan and approve_plan end to end against a real
 LLM transport and real Postgres: the LLM reads weak topics through
 the tool-call loop, emits a mutate-only plan grounded in that
-evidence, and the approved plan's mutations commit atomically.
+evidence, and the approved plan's mutations commit atomically. Each
+plan target then runs through the retrieval specialist against real
+seeded pgvector rows and returns nested search evidence.
 
 Seeds two weak topics under a recognizable prefix: topic rows plus a
 synthetic completed session and two INCORRECT learned items each.
@@ -32,8 +34,9 @@ Run with the Postgres container up and migrated to head:
     cd backend && uv run python scripts/smoke_agent_planner.py
 
 The script cleans up its rows at start and exit (learned items,
-session, topics, domain under the smoke prefix), so re-runs start
-clean and a mid-run failure still cleans up.
+session, topics, domain, and corpus embeddings under the smoke
+prefix), so re-runs start clean and a mid-run failure still cleans
+up.
 
 Requires:
   - DeepSeek path: DEEPSEEK_API_KEY in .env or process environment.
@@ -52,6 +55,8 @@ from app.core.db import SessionLocal
 from app.models import (
     Domain,
     DomainKind,
+    Embedding,
+    EmbeddingSourceType,
     GradingVerdict,
     LearnedItem,
     LearningMode,
@@ -62,7 +67,8 @@ from app.models import (
     TransportKind,
 )
 from app.schemas.agent_plan import MarkForRevisionStep, Plan
-from app.schemas.tools import MarkForRevisionInput
+from app.schemas.agent_specialist import SpecialistResult
+from app.schemas.tools import MarkForRevisionInput, SearchCorpusOutput
 from app.services.agent_error_recorder import WritingAgentErrorRecorder
 from app.services.agent_orchestrator import AgentOrchestratorError
 from app.services.agent_planner import (
@@ -70,9 +76,14 @@ from app.services.agent_planner import (
     approve_plan,
     propose_plan,
 )
-from app.services.embedding_service import OpenRouterEmbedder
+from app.services.embedding_service import (
+    EmbeddingRecord,
+    OpenRouterEmbedder,
+    embed_records,
+)
 from app.transport.deepseek_impl import DeepseekTransport
 from app.transport.playwright_impl import PlaywrightClaudeTransport
+from pydantic import ValidationError
 from sqlalchemy import delete, select, update
 
 if TYPE_CHECKING:
@@ -88,6 +99,19 @@ _WEAK_B = f"{_SMOKE_PREFIX} > Recursion > BaseCase"
 # rejected as ungrounded. Under the prefix so cleanup would catch it
 # even if a bug created it.
 _NEVER_SEEDED = f"{_SMOKE_PREFIX} > Ghost > NeverSeeded"
+_CORPUS_MARKER = "SmokePlanner specialist corpus"
+_CORPUS_RECORDS: list[tuple[str, str]] = [
+    (
+        "smoke-planner-specialist-0",
+        f"{_CORPUS_MARKER}: Off-by-one loop errors happen when a range "
+        "endpoint or boundary condition admits one iteration too many.",
+    ),
+    (
+        "smoke-planner-specialist-1",
+        f"{_CORPUS_MARKER}: A recursive function needs a base case that "
+        "terminates before the recursive branch calls itself again.",
+    ),
+]
 
 TransportChoice = Literal["deepseek", "playwright", "all"]
 
@@ -115,6 +139,11 @@ def _cleanup() -> None:
     """
     session = SessionLocal()
     try:
+        session.execute(
+            delete(Embedding).where(
+                Embedding.source_id.in_([source_id for source_id, _ in _CORPUS_RECORDS])
+            )
+        )
         topic_ids = (
             session.execute(select(Topic.id).where(Topic.path.like(f"{_SMOKE_PREFIX}%")))
             .scalars()
@@ -183,6 +212,33 @@ def _seed() -> None:
     print(f"Seeded {_WEAK_A!r} and {_WEAK_B!r}: LEARNED, two INCORRECT items each.\n")
 
 
+async def _seed_corpus(embedder: OpenRouterEmbedder) -> None:
+    """Embed and store the temporary corpus rows for specialist search.
+
+    The initial cleanup removes prior copies, so each run proves a
+    fresh OpenRouter embedding write before the specialist exercises
+    the real pgvector query.
+    """
+    session = SessionLocal()
+    try:
+        records = [
+            EmbeddingRecord(
+                source_type=EmbeddingSourceType.LEARNED_ITEM,
+                source_id=source_id,
+                content=content,
+            )
+            for source_id, content in _CORPUS_RECORDS
+        ]
+        await embed_records(db=session, embedder=embedder, records=records)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+    print(f"Seeded {len(_CORPUS_RECORDS)} temporary corpus embeddings.\n")
+
+
 def _reset_seeded_statuses() -> None:
     """Set both seeded topics back to LEARNED on a short session.
 
@@ -242,7 +298,14 @@ def _print_proposal(evidence: list[Evidence], plan: Plan) -> None:
     """Print the round trip's artifacts for eyeballing."""
     print(f"  Evidence entries: {len(evidence)}")
     for item in evidence:
-        print(f"    {item.tool}: {sorted(_evidence_paths([item]))}")
+        if item.tool == "retrieval_specialist":
+            topic_path = item.result.get("topic_path")
+            finding = item.result.get("finding")
+            if isinstance(finding, dict):
+                topic_path = finding.get("topic_path")
+            print(f"    {item.tool}: target={topic_path}, status={item.result.get('status')}")
+        else:
+            print(f"    {item.tool}: {sorted(_evidence_paths([item]))}")
     print(f"  Plan steps: {len(plan.steps)}")
     for target in _plan_targets(plan):
         print(f"    mark_for_revision -> {target!r}")
@@ -272,6 +335,60 @@ def _check_invariants(name: str, proposal: PlanProposal) -> list[str]:
     ungrounded = [t for t in targets if t not in evidenced]
     if ungrounded:
         failures.append(f"{name}: targets missing from evidence: {ungrounded!r}")
+    return failures
+
+
+def _check_specialist_invariants(name: str, proposal: PlanProposal) -> list[str]:
+    """Require one completed, search-grounded outcome per plan target."""
+    failures: list[str] = []
+    targets = _plan_targets(proposal.plan)
+    outcomes = [item for item in proposal.evidence if item.tool == "retrieval_specialist"]
+    if len(outcomes) != len(targets):
+        failures.append(
+            f"{name}: expected {len(targets)} specialist outcomes, got {len(outcomes)}."
+        )
+        return failures
+
+    for target, outcome in zip(targets, outcomes, strict=True):
+        try:
+            result = SpecialistResult.model_validate(outcome.result)
+        except ValidationError as exc:
+            status = outcome.result.get("status")
+            failures.append(
+                f"{name}: specialist outcome for {target!r} is not completed "
+                f"(status={status!r}): {exc.errors(include_url=False)!r}"
+            )
+            continue
+
+        if result.finding.topic_path != target:
+            failures.append(
+                f"{name}: specialist finding target {result.finding.topic_path!r} "
+                f"does not match plan target {target!r}."
+            )
+
+        hit_count = 0
+        for nested in result.evidence:
+            if nested.tool != "search_corpus":
+                failures.append(
+                    f"{name}: specialist for {target!r} retained unexpected "
+                    f"tool evidence {nested.tool!r}."
+                )
+                continue
+            try:
+                search_result = SearchCorpusOutput.model_validate(nested.result)
+            except ValidationError as exc:
+                failures.append(
+                    f"{name}: specialist search evidence for {target!r} is invalid: "
+                    f"{exc.errors(include_url=False)!r}"
+                )
+                continue
+            hit_count += len(search_result.hits)
+
+        if not result.evidence:
+            failures.append(f"{name}: specialist for {target!r} retained no search evidence.")
+        elif hit_count == 0:
+            failures.append(f"{name}: specialist pgvector search for {target!r} returned no hits.")
+
     return failures
 
 
@@ -349,6 +466,7 @@ async def _smoke_one(
     _print_proposal(proposal.evidence, proposal.plan)
 
     failures = _check_invariants(name, proposal)
+    failures += _check_specialist_invariants(name, proposal)
     if failures:
         return failures
 
@@ -379,15 +497,15 @@ async def run(choice: TransportChoice) -> int:
     """Seed, run the chosen transport(s), clean up, aggregate."""
     _require_postgres()
     _cleanup()
-    _seed()
-
-    settings = get_settings()
     failures: list[str] = []
     try:
+        _seed()
+        settings = get_settings()
         async with OpenRouterEmbedder(
             api_key=settings.openrouter_api_key.get_secret_value(),
             model=settings.openrouter_embedding_model,
         ) as embedder:
+            await _seed_corpus(embedder)
             if choice in {"deepseek", "all"}:
                 async with DeepseekTransport(
                     api_key=settings.deepseek_api_key.get_secret_value(),
@@ -415,7 +533,7 @@ async def run(choice: TransportChoice) -> int:
         for f in failures:
             print(f"  - {f}")
         return 1
-    print("\nSMOKE PASSED: planner propose/approve round trip holds end to end.")
+    print("\nSMOKE PASSED: planner, specialist retrieval, and approve round trip hold end to end.")
     return 0
 
 
