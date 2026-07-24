@@ -26,6 +26,7 @@ from app.schemas.tools import (
     GetStaleTopicsInput,
     GetTopicsByDomainInput,
     GetWeakTopicsInput,
+    SearchCorpusInput,
     ToolCall,
 )
 from app.transport.base import (
@@ -87,6 +88,10 @@ _TOOL_CATALOG: dict[str, tuple[str, type[BaseModel]]] = {
     "get_stale_topics": (
         "Returns topics whose last review is older than the threshold, oldest-first.",
         GetStaleTopicsInput,
+    ),
+    "search_corpus": (
+        "Searches the user's corpus by semantic similarity and returns ranked hits.",
+        SearchCorpusInput,
     ),
 }
 
